@@ -77,7 +77,7 @@ jobs:
           set -euo pipefail
 
           ZIP_PATH='${{ steps.build.outputs.zip_path }}'
-          if unzip -l "${ZIP_PATH}" | grep -E '/(\.git|\.github|tests|docs|scripts|_dist|dist|build)/|\.env|\.sql|\.zip'; then
+          if zipinfo -1 "${ZIP_PATH}" | grep -E '(^|/)(\.git|\.github|tests|docs|scripts|_dist|dist|build)(/|$)|(^|/)\.env($|[^/]*$)|(^|/)[^/]+\.sql(\.gz)?$|(^|/)[^/]+\.zip$'; then
             echo '发布包包含不应发布的文件，请检查 .distignore。'
             exit 1
           fi
