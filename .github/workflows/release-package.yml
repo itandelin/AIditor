@@ -37,8 +37,17 @@ jobs:
           PLUGIN_SLUG="aiditor"
           STAGE_ROOT="${RUNNER_TEMP}/package"
           STAGE_DIR="${STAGE_ROOT}/${PLUGIN_SLUG}"
-          ZIP_PATH="${RUNNER_TEMP}/${PLUGIN_SLUG}.zip"
           IGNORE_FILE="${GITHUB_WORKSPACE}/.distignore"
+          if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
+            RELEASE_LABEL='${{ github.event.release.tag_name }}'
+          else
+            RELEASE_LABEL="$(sed -n "s/^define('AIDITOR_VERSION', '\\([^']*\\)').*/\\1/p" "${GITHUB_WORKSPACE}/aiditor.php" | head -n 1)"
+          fi
+
+          RELEASE_LABEL="${RELEASE_LABEL#refs/tags/}"
+          RELEASE_LABEL="${RELEASE_LABEL#v}"
+          ZIP_NAME="AIditor-v${RELEASE_LABEL}.zip"
+          ZIP_PATH="${RUNNER_TEMP}/${ZIP_NAME}"
 
           rm -rf "${STAGE_ROOT}" "${ZIP_PATH}"
           mkdir -p "${STAGE_DIR}"
@@ -59,6 +68,7 @@ jobs:
           )
 
           echo "plugin_slug=${PLUGIN_SLUG}" >> "${GITHUB_OUTPUT}"
+          echo "zip_name=${ZIP_NAME}" >> "${GITHUB_OUTPUT}"
           echo "zip_path=${ZIP_PATH}" >> "${GITHUB_OUTPUT}"
 
       - name: 验证发布包内容
@@ -75,7 +85,7 @@ jobs:
       - name: 上传工作流产物
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.build.outputs.plugin_slug }}-release
+          name: ${{ steps.build.outputs.zip_name }}
           path: ${{ steps.build.outputs.zip_path }}
 
       - name: 附加到 GitHub Release
