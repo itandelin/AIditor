@@ -1,0 +1,85 @@
+name: 生成发布包
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: 检查并生成插件 ZIP
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 检查敏感信息
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if git ls-files -z | xargs -0 grep -nE 'sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----|xox[baprs]-[A-Za-z0-9-]+'; then
+            echo '发现疑似敏感信息，请先清理后再发布。'
+            exit 1
+          fi
+
+      - name: 准备打包目录
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PLUGIN_SLUG="aiditor"
+          STAGE_ROOT="${RUNNER_TEMP}/package"
+          STAGE_DIR="${STAGE_ROOT}/${PLUGIN_SLUG}"
+          ZIP_PATH="${RUNNER_TEMP}/${PLUGIN_SLUG}.zip"
+          IGNORE_FILE="${GITHUB_WORKSPACE}/.distignore"
+
+          rm -rf "${STAGE_ROOT}" "${ZIP_PATH}"
+          mkdir -p "${STAGE_DIR}"
+
+          RSYNC_EXCLUDES=()
+          if [[ -f "${IGNORE_FILE}" ]]; then
+            while IFS= read -r pattern || [[ -n "${pattern}" ]]; do
+              [[ -z "${pattern}" ]] && continue
+              RSYNC_EXCLUDES+=(--exclude "${pattern}")
+            done < "${IGNORE_FILE}"
+          fi
+
+          rsync -a "${RSYNC_EXCLUDES[@]}" "${GITHUB_WORKSPACE}/" "${STAGE_DIR}/"
+
+          (
+            cd "${STAGE_ROOT}"
+            zip -qr "${ZIP_PATH}" "${PLUGIN_SLUG}"
+          )
+
+          echo "plugin_slug=${PLUGIN_SLUG}" >> "${GITHUB_OUTPUT}"
+          echo "zip_path=${ZIP_PATH}" >> "${GITHUB_OUTPUT}"
+
+      - name: 验证发布包内容
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP_PATH='${{ steps.build.outputs.zip_path }}'
+          if unzip -l "${ZIP_PATH}" | grep -E '/(\.git|\.github|tests|docs|scripts|_dist|dist|build)/|\.env|\.sql|\.zip'; then
+            echo '发布包包含不应发布的文件，请检查 .distignore。'
+            exit 1
+          fi
+
+      - name: 上传工作流产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.build.outputs.plugin_slug }}-release
+          path: ${{ steps.build.outputs.zip_path }}
+
+      - name: 附加到 GitHub Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.build.outputs.zip_path }}
