@@ -74,7 +74,123 @@ class AIditor_Taxonomy_Browser
             'post_types'         => $this->get_post_type_options(),
             'target_taxonomies'  => $targets,
             'extra_taxonomies'   => $extras,
+            'meta_fields'        => $this->get_safe_meta_fields($post_type),
         );
+    }
+
+    protected function get_safe_meta_fields(string $post_type): array
+    {
+        $fields = array();
+
+        foreach ($this->get_registered_post_meta_fields($post_type) as $field) {
+            $fields[$field['key']] = $field;
+        }
+
+        foreach ($this->get_acf_meta_fields($post_type) as $field) {
+            $fields[$field['key']] = $field;
+        }
+
+        uasort(
+            $fields,
+            static function (array $left, array $right): int {
+                return strcmp($left['label'], $right['label']);
+            }
+        );
+
+        return array_values($fields);
+    }
+
+    protected function get_registered_post_meta_fields(string $post_type): array
+    {
+        if (! function_exists('get_registered_meta_keys')) {
+            return array();
+        }
+
+        $registered = get_registered_meta_keys('post', $post_type);
+        if (! is_array($registered)) {
+            return array();
+        }
+
+        $fields = array();
+        foreach ($registered as $key => $args) {
+            $key = sanitize_key((string) $key);
+            if (! $this->is_safe_meta_key($key)) {
+                continue;
+            }
+
+            $fields[] = array(
+                'key'    => $key,
+                'label'  => $this->get_meta_field_label($key, is_array($args) ? $args : array()),
+                'source' => 'registered',
+            );
+        }
+
+        return $fields;
+    }
+
+    protected function get_acf_meta_fields(string $post_type): array
+    {
+        if (! function_exists('acf_get_field_groups') || ! function_exists('acf_get_fields')) {
+            return array();
+        }
+
+        $groups = acf_get_field_groups(array('post_type' => $post_type));
+        if (! is_array($groups)) {
+            return array();
+        }
+
+        $fields = array();
+        foreach ($groups as $group) {
+            $group_fields = acf_get_fields($group);
+            if (! is_array($group_fields)) {
+                continue;
+            }
+
+            foreach ($group_fields as $field) {
+                if (! is_array($field)) {
+                    continue;
+                }
+
+                $key = sanitize_key((string) ($field['name'] ?? ''));
+                if (! $this->is_safe_meta_key($key)) {
+                    continue;
+                }
+
+                $fields[] = array(
+                    'key'    => $key,
+                    'label'  => trim((string) ($field['label'] ?? $key)),
+                    'source' => 'acf',
+                );
+            }
+        }
+
+        return $fields;
+    }
+
+    protected function get_meta_field_label(string $key, array $args): string
+    {
+        foreach (array('label', 'description') as $property) {
+            if ('' !== trim((string) ($args[$property] ?? ''))) {
+                return trim((string) $args[$property]);
+            }
+        }
+
+        return $key;
+    }
+
+    protected function is_safe_meta_key(string $key): bool
+    {
+        if ('' === $key) {
+            return false;
+        }
+
+        foreach (array('_wp_', '_edit_', '_oembed_', '_elementor_', '_thumbnail_id', '_wp_page_template') as $blocked) {
+            if ($key === $blocked || 0 === strpos($key, $blocked)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     public function get_terms(string $taxonomy, ?int $parent = 0): array

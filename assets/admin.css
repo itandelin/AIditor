@@ -861,11 +861,187 @@
     color: #fff;
 }
 
-.aiditor-settings-shell {
-    max-width: 1180px;
+.aiditor-editing-shell {
+    align-items: start;
+    display: grid;
+    gap: 16px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.aiditor-settings-header {
+.aiditor-editing-column {
+    min-width: 0;
+}
+
+.aiditor-editing-workflow-actions {
+    align-items: center;
+}
+
+.aiditor-editing-workflow-step {
+    color: var(--aiditor-muted);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.aiditor-editing-field-list,
+.aiditor-editing-mapping-list {
+    display: grid;
+    gap: 12px;
+}
+
+ .aiditor-editing-field-card {
+    border: 1px solid var(--aiditor-border);
+    border-radius: 8px;
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+}
+
+.aiditor-editing-field-card.is-changed {
+    border-color: rgba(2, 122, 72, 0.34);
+    box-shadow: inset 0 0 0 1px rgba(2, 122, 72, 0.10);
+}
+
+.aiditor-editing-field-card.is-unchanged {
+    border-color: rgba(102, 112, 133, 0.28);
+}
+
+.aiditor-editing-field-card-header {
+    align-items: flex-start;
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+}
+
+.aiditor-editing-field-card-header strong {
+    color: #1d2327;
+    font-size: 14px;
+}
+
+.aiditor-editing-field-card-meta {
+    align-items: center;
+    color: var(--aiditor-muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    line-height: 22px;
+    min-height: 22px;
+}
+
+.aiditor-editing-field-card-meta .aiditor-pill {
+    font-size: 11px;
+    line-height: 16px;
+    min-height: 18px;
+    padding: 1px 8px;
+}
+
+.aiditor-editing-checkbox {
+    align-items: center;
+    display: inline-flex;
+    gap: 6px;
+    white-space: nowrap;
+}
+
+ .aiditor-editing-value {
+    background: #f8fafc;
+    border: 1px solid rgba(208, 213, 221, 0.72);
+    border-radius: 8px;
+    line-height: 1.65;
+    max-height: 320px;
+    overflow: auto;
+    padding: 10px 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.aiditor-editing-value.is-html {
+    max-height: 560px;
+    overscroll-behavior: contain;
+    white-space: normal;
+}
+
+.aiditor-editing-value.is-html > :first-child {
+    margin-top: 0;
+}
+
+.aiditor-editing-value.is-html > :last-child {
+    margin-bottom: 0;
+}
+
+.aiditor-editing-value.is-html p,
+.aiditor-editing-value.is-html ul,
+.aiditor-editing-value.is-html ol,
+.aiditor-editing-value.is-html blockquote,
+.aiditor-editing-value.is-html pre,
+.aiditor-editing-value.is-html table {
+    margin: 0 0 1em;
+}
+
+.aiditor-editing-value.is-html li + li {
+    margin-top: 0.35em;
+}
+
+.aiditor-editing-value.is-html h2,
+.aiditor-editing-value.is-html h3,
+.aiditor-editing-value.is-html h4 {
+    line-height: 1.4;
+    margin: 1.2em 0 0.6em;
+}
+
+.aiditor-editing-value.is-html img,
+.aiditor-editing-value.is-html table,
+.aiditor-editing-value.is-html pre {
+    max-width: 100%;
+}
+
+.aiditor-editing-value.is-html table {
+    display: block;
+    overflow-x: auto;
+}
+
+.aiditor-editing-value code {
+    white-space: pre-wrap;
+}
+
+.aiditor-editing-mapping-row {
+    align-items: end;
+    border: 1px solid var(--aiditor-border);
+    border-radius: 8px;
+    display: grid;
+    gap: 12px;
+    grid-template-columns: minmax(140px, 1.1fr) minmax(140px, 1fr) minmax(180px, 1.2fr);
+    padding: 12px;
+}
+
+.aiditor-editing-mapping-source {
+    display: grid;
+    gap: 4px;
+}
+
+.aiditor-editing-mapping-source small {
+    color: var(--aiditor-muted);
+}
+
+.aiditor-editing-meta-destination {
+    display: grid;
+    gap: 8px;
+}
+
+.aiditor-editing-meta-destination select,
+.aiditor-editing-meta-destination input {
+    width: 100%;
+}
+
+.aiditor-editing-publish-shell {
+    margin-top: 16px;
+}
+
+.aiditor-editing-empty {
+    border: 1px dashed rgba(102, 112, 133, 0.38);
+    border-radius: 8px;
+    color: var(--aiditor-muted);
+    padding: 18px;
+}
+
     align-items: center;
     border-bottom: 1px solid var(--aiditor-border);
     margin-bottom: 12px;
@@ -1254,7 +1430,8 @@
         grid-template-columns: 1fr;
     }
 
-    .aiditor-model-workbench {
+    .aiditor-model-workbench,
+    .aiditor-editing-shell {
         grid-template-columns: 1fr;
     }
 

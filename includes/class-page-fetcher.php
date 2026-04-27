@@ -24,7 +24,7 @@ class AIditor_Page_Fetcher
             array(
                 'timeout'     => 25,
                 'redirection' => 5,
-                'sslverify'   => false,
+                'sslverify'   => $this->should_verify_ssl(),
                 'headers'     => array(
                     'User-Agent' => 'Mozilla/5.0 AIditor/0.4 WordPress AI Collector',
                     'Accept'     => 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -52,6 +52,15 @@ class AIditor_Page_Fetcher
         }
 
         return $this->normalize_html($body, $final_url);
+    }
+
+    protected function should_verify_ssl(): bool
+    {
+        if (function_exists('apply_filters')) {
+            return (bool) apply_filters('aiditor_sslverify', true);
+        }
+
+        return true;
     }
 
     protected function normalize_html(string $html, string $url): array

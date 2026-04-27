@@ -406,7 +406,7 @@ class AIditor_Queue_Worker
         $run_id = isset($_POST['run_id']) ? trim((string) wp_unslash($_POST['run_id'])) : '';
         $token  = isset($_POST['token']) ? trim((string) wp_unslash($_POST['token'])) : '';
 
-        if ('' === $run_id || '' === $token || ! hash_equals($this->create_async_worker_token($run_id), $token)) {
+        if (! $this->is_valid_async_worker_request($run_id, $token)) {
             if (function_exists('wp_send_json_error')) {
                 wp_send_json_error(array('message' => '后台 worker 请求校验失败。'), 403);
             }
@@ -485,6 +485,10 @@ class AIditor_Queue_Worker
             );
         }
 
+        if ($launched < $slots) {
+            $this->schedule_run($run_id, 1);
+        }
+
         if ($launched < 1) {
             return $this->process_run($run_id);
         }
@@ -493,7 +497,9 @@ class AIditor_Queue_Worker
             $run_id,
             array(
                 'worker_message' => sprintf(
-                    '后台调度器已派发 %d 个异步 worker，目标并发 %d。',
+                    $launched < $slots
+                        ? '后台调度器已派发 %d 个异步 worker，目标并发 %d；未派发完成的 worker 将由下一轮调度补齐。'
+                        : '后台调度器已派发 %d 个异步 worker，目标并发 %d。',
                     $launched,
                     (int) ($runtime['concurrency'] ?? self::DEFAULT_PROCESS_CONCURRENCY)
                 ),
@@ -853,7 +859,7 @@ class AIditor_Queue_Worker
             $template        = is_array($context['template'] ?? null) ? $context['template'] : $this->get_run_template($run);
             $model_settings  = $this->get_run_model_settings($run);
             $detail_url      = trim((string) ($item['source_url'] ?? ''));
-            $dedupe          = $this->deduper->inspect($source_site, $slug);
+            $dedupe          = $this->deduper->inspect($source_site, $slug, array((string) ($run['post_type'] ?? 'post')));
             $existing_post_id = ! empty($dedupe['is_duplicate']) ? (int) ($dedupe['post_id'] ?? 0) : 0;
 
             if ('' === $detail_url) {
@@ -888,6 +894,18 @@ class AIditor_Queue_Worker
 
             if ('' !== $run_id && $this->should_stop_processing($run_id, $run)) {
                 return $this->stop_current_item($run_id, $item, $this->get_effective_stop_status($run_id, $run));
+            }
+
+            if ($existing_post_id > 0 && ! $this->deduper->has_aiditor_source_identity($existing_post_id, $source_site, $slug)) {
+                return $this->items->update_item(
+                    (int) ($item['id'] ?? 0),
+                    array(
+                        'status'       => 'skipped',
+                        'post_id'      => $existing_post_id,
+                        'message'      => '检测到可能重复的文章，但来源标识不完整，已跳过以避免覆盖已有内容。',
+                        'processed_at' => gmdate('Y-m-d H:i:s'),
+                    )
+                );
             }
 
             if ($existing_post_id > 0 && $this->deduper->is_post_source_hash_current($existing_post_id, $source_hash)) {
@@ -1729,28 +1747,55 @@ class AIditor_Queue_Worker
             admin_url('admin-ajax.php'),
             array(
                 'blocking'  => false,
-                'timeout'   => 0.5,
+                'timeout'   => 2,
+                'redirection' => 0,
                 'sslverify' => $this->should_verify_ssl(),
                 'body'      => array(
                     'action' => 'aiditor_worker',
                     'run_id' => $run_id,
-                    'token'  => $this->create_async_worker_token($run_id),
+                    'token'  => $this->create_async_worker_token($run_id, time()),
                 ),
             )
         );
 
-        return ! is_wp_error($response);
+        if (is_wp_error($response)) {
+            return false;
+        }
+
+        $status = (int) wp_remote_retrieve_response_code($response);
+
+        return 0 === $status || ($status >= 200 && $status < 400);
     }
 
-    protected function create_async_worker_token(string $run_id): string
+    protected function create_async_worker_token(string $run_id, ?int $timestamp = null): string
     {
+        $timestamp = null === $timestamp ? time() : $timestamp;
         $secret = function_exists('wp_salt') ? wp_salt('auth') : '';
 
         if ('' === trim($secret)) {
             $secret = defined('AUTH_KEY') ? (string) AUTH_KEY : __FILE__;
         }
 
-        return hash_hmac('sha256', $run_id, $secret);
+        return $timestamp . ':' . hash_hmac('sha256', $run_id . '|' . $timestamp, $secret);
+    }
+
+    protected function is_valid_async_worker_request(string $run_id, string $token): bool
+    {
+        if ('' === $run_id || '' === $token || false === strpos($token, ':')) {
+            return false;
+        }
+
+        list($timestamp_raw) = explode(':', $token, 2);
+        if (! ctype_digit($timestamp_raw)) {
+            return false;
+        }
+
+        $timestamp = (int) $timestamp_raw;
+        if (abs(time() - $timestamp) > 300) {
+            return false;
+        }
+
+        return hash_equals($this->create_async_worker_token($run_id, $timestamp), $token);
     }
 
     protected function prepare_async_worker_runtime(): void

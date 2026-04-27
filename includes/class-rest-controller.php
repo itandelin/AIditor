@@ -84,6 +84,7 @@ class AIditor_REST_Controller
                     'methods'             => WP_REST_Server::CREATABLE,
                     'callback'            => array($this, 'save_settings'),
                     'permission_callback' => array($this, 'can_manage'),
+                    'args'                => $this->get_settings_route_args(),
                 ),
             )
         );
@@ -155,6 +156,18 @@ class AIditor_REST_Controller
 
         register_rest_route(
             'aiditor/v1',
+            '/templates/(?P<template_id>[a-zA-Z0-9\-\_]+)/preview',
+            array(
+                array(
+                    'methods'             => WP_REST_Server::CREATABLE,
+                    'callback'            => array($this, 'preview_template'),
+                    'permission_callback' => array($this, 'can_manage'),
+                ),
+            )
+        );
+
+        register_rest_route(
+            'aiditor/v1',
             '/templates/(?P<template_id>[a-zA-Z0-9\-\_]+)/run',
             array(
                 array(
@@ -196,6 +209,42 @@ class AIditor_REST_Controller
                 array(
                     'methods'             => WP_REST_Server::CREATABLE,
                     'callback'            => array($this, 'generic_extract_fields'),
+                    'permission_callback' => array($this, 'can_manage'),
+                ),
+            )
+        );
+
+        register_rest_route(
+            'aiditor/v1',
+            '/editing/extract',
+            array(
+                array(
+                    'methods'             => WP_REST_Server::CREATABLE,
+                    'callback'            => array($this, 'editing_extract_fields'),
+                    'permission_callback' => array($this, 'can_manage'),
+                ),
+            )
+        );
+
+        register_rest_route(
+            'aiditor/v1',
+            '/editing/rewrite',
+            array(
+                array(
+                    'methods'             => WP_REST_Server::CREATABLE,
+                    'callback'            => array($this, 'editing_rewrite_fields'),
+                    'permission_callback' => array($this, 'can_manage'),
+                ),
+            )
+        );
+
+        register_rest_route(
+            'aiditor/v1',
+            '/editing/publish',
+            array(
+                array(
+                    'methods'             => WP_REST_Server::CREATABLE,
+                    'callback'            => array($this, 'editing_publish_fields'),
                     'permission_callback' => array($this, 'can_manage'),
                 ),
             )
@@ -330,6 +379,122 @@ class AIditor_REST_Controller
         return current_user_can('manage_options');
     }
 
+    protected function get_settings_route_args(): array
+    {
+        return array(
+            'provider_type' => array(
+                'type'              => 'string',
+                'required'          => false,
+                'sanitize_callback' => 'sanitize_text_field',
+            ),
+            'base_url' => array(
+                'type'              => 'string',
+                'required'          => false,
+                'sanitize_callback' => 'esc_url_raw',
+            ),
+            'api_key' => array(
+                'type'              => 'string',
+                'required'          => false,
+                'sanitize_callback' => array($this, 'sanitize_plain_setting_string'),
+            ),
+            'model' => array(
+                'type'              => 'string',
+                'required'          => false,
+                'sanitize_callback' => 'sanitize_text_field',
+            ),
+            'temperature' => array(
+                'type'              => 'number',
+                'required'          => false,
+                'validate_callback' => array($this, 'validate_numeric_setting'),
+            ),
+            'max_tokens' => array(
+                'type'              => 'integer',
+                'required'          => false,
+                'validate_callback' => array($this, 'validate_numeric_setting'),
+            ),
+            'request_timeout' => array(
+                'type'              => 'integer',
+                'required'          => false,
+                'validate_callback' => array($this, 'validate_numeric_setting'),
+            ),
+            'default_model_profile_id' => array(
+                'type'              => 'string',
+                'required'          => false,
+                'sanitize_callback' => 'sanitize_key',
+            ),
+            'model_profiles' => array(
+                'required'          => false,
+                'validate_callback' => array($this, 'validate_model_profiles_setting'),
+            ),
+            'queue_batch_size' => array(
+                'type'              => 'integer',
+                'required'          => false,
+                'validate_callback' => array($this, 'validate_numeric_setting'),
+            ),
+            'queue_time_limit' => array(
+                'type'              => 'integer',
+                'required'          => false,
+                'validate_callback' => array($this, 'validate_numeric_setting'),
+            ),
+            'queue_concurrency' => array(
+                'type'              => 'integer',
+                'required'          => false,
+                'validate_callback' => array($this, 'validate_numeric_setting'),
+            ),
+            'queue_poll_interval' => array(
+                'type'              => 'integer',
+                'required'          => false,
+                'validate_callback' => array($this, 'validate_numeric_setting'),
+            ),
+            'log_retention_days' => array(
+                'type'              => 'integer',
+                'required'          => false,
+                'validate_callback' => array($this, 'validate_numeric_setting'),
+            ),
+            'default_category_slug' => array(
+                'type'              => 'string',
+                'required'          => false,
+                'sanitize_callback' => 'sanitize_title',
+            ),
+            'default_post_status' => array(
+                'type'              => 'string',
+                'required'          => false,
+                'validate_callback' => array($this, 'validate_post_status_setting'),
+                'sanitize_callback' => 'sanitize_key',
+            ),
+            'default_article_style' => array(
+                'type'              => 'string',
+                'required'          => false,
+                'sanitize_callback' => 'sanitize_key',
+            ),
+        );
+    }
+
+    public function sanitize_plain_setting_string($value): string
+    {
+        return is_scalar($value) ? trim((string) $value) : '';
+    }
+
+    public function validate_numeric_setting($value): bool
+    {
+        return is_numeric($value);
+    }
+
+    public function validate_model_profiles_setting($value): bool
+    {
+        if (is_string($value)) {
+            $decoded = json_decode($value, true);
+            return is_array($decoded);
+        }
+
+        return is_array($value);
+    }
+
+    public function validate_post_status_setting($value): bool
+    {
+        return in_array((string) $value, array('draft', 'pending', 'private', 'publish'), true);
+    }
+
     public function get_settings(): WP_REST_Response
     {
         return rest_ensure_response(
@@ -443,6 +608,71 @@ class AIditor_REST_Controller
                 'terms'    => $this->taxonomy_browser->get_terms($taxonomy, $parent),
             )
         );
+    }
+
+    public function preview_template(WP_REST_Request $request)
+    {
+        try {
+            $template = $this->templates->get((string) $request['template_id']);
+
+            if (! is_array($template)) {
+                return new WP_Error('aiditor_template_not_found', '未找到对应采集模板。', array('status' => 404));
+            }
+
+            $payload = $this->get_request_payload($request);
+            $source_url = esc_url_raw((string) ($payload['source_url'] ?? $template['source_url'] ?? ''));
+
+            if ('' === $source_url) {
+                return new WP_Error('aiditor_source_url_required', '必须提供来源 URL。', array('status' => 400));
+            }
+
+            $limit = max(1, min(self::PREVIEW_LIMIT, (int) ($payload['limit'] ?? self::PREVIEW_LIMIT)));
+            $mode  = (string) ($template['source_mode'] ?? 'list');
+            $model_settings = $this->resolve_request_model_settings($payload);
+
+            if ('detail' === $mode) {
+                $result = array(
+                    'items' => array(
+                        array(
+                            'url'    => $source_url,
+                            'title'  => (string) ($template['name'] ?? $source_url),
+                            'reason' => '当前模板为详情页模式，将直接采集该 URL。',
+                        ),
+                    ),
+                );
+                $page = array(
+                    'url'         => $source_url,
+                    'title'       => (string) ($template['name'] ?? ''),
+                    'description' => '',
+                );
+            } else {
+                $page = $this->page_fetcher->fetch($source_url);
+                $result = $this->ai_extractor->discover_detail_urls(
+                    $page,
+                    (string) ($template['extraction_prompt'] ?? '请识别列表页中的详情页 URL。'),
+                    $limit,
+                    $model_settings
+                );
+            }
+
+            return rest_ensure_response(
+                array(
+                    'source_url'       => $source_url,
+                    'template_id'      => (string) ($template['template_id'] ?? ''),
+                    'template_name'    => (string) ($template['name'] ?? ''),
+                    'requested_limit'  => max(1, (int) ($payload['limit'] ?? $limit)),
+                    'preview_limit'    => $limit,
+                    'page'             => array(
+                        'url'         => $page['url'] ?? $source_url,
+                        'title'       => $page['title'] ?? '',
+                        'description' => $page['description'] ?? '',
+                    ),
+                    'result'           => $result,
+                )
+            );
+        } catch (Throwable $exception) {
+            return new WP_Error('aiditor_template_preview_failed', $exception->getMessage(), array('status' => 400));
+        }
     }
 
     public function run_template(WP_REST_Request $request)
@@ -584,6 +814,139 @@ class AIditor_REST_Controller
             );
         } catch (Throwable $exception) {
             return new WP_Error('aiditor_generic_extract_failed', $exception->getMessage(), array('status' => 400));
+        }
+    }
+
+    public function editing_extract_fields(WP_REST_Request $request)
+    {
+        try {
+            $payload         = $this->get_request_payload($request);
+            $url             = esc_url_raw(trim((string) ($payload['url'] ?? '')));
+            $instruction     = trim((string) ($payload['instruction'] ?? '请提取标题、发布时间、关键词、摘要、正文与作者。正文只保留主体内容。'));
+            $field_schema    = is_array($payload['field_schema'] ?? null) ? $payload['field_schema'] : $this->get_default_editing_field_schema();
+            $runtime_settings = $this->resolve_request_model_settings($payload);
+            $page            = $this->page_fetcher->fetch($url);
+            $fields          = $this->ai_extractor->extract_fields($page, $field_schema, $instruction, $runtime_settings);
+            $fields['source_url'] = (string) ($fields['source_url'] ?? $url);
+            $fields = $this->sanitize_editing_preview_fields($fields, $field_schema);
+
+            return rest_ensure_response(
+                array(
+                    'source_url'             => $url,
+                    'page'                   => array(
+                        'url'         => $page['url'] ?? $url,
+                        'title'       => $page['title'] ?? '',
+                        'description' => $page['description'] ?? '',
+                    ),
+                    'field_schema'           => $field_schema,
+                    'fields'                 => $fields,
+                    'default_rewrite_fields' => $this->get_default_rewrite_fields($field_schema),
+                )
+            );
+        } catch (Throwable $exception) {
+            return new WP_Error('aiditor_editing_extract_failed', $exception->getMessage(), array('status' => 400));
+        }
+    }
+
+    public function editing_rewrite_fields(WP_REST_Request $request)
+    {
+        try {
+            $payload          = $this->get_request_payload($request);
+            $fields           = is_array($payload['fields'] ?? null) ? $payload['fields'] : array();
+            $field_schema     = is_array($payload['field_schema'] ?? null) ? $payload['field_schema'] : $this->get_default_editing_field_schema();
+            $rewrite_fields   = $this->sanitize_string_array($payload['rewrite_fields'] ?? array());
+            $instruction      = trim((string) ($payload['instruction'] ?? ''));
+            $runtime_settings = $this->resolve_request_model_settings($payload);
+
+            if (empty($rewrite_fields)) {
+                return new WP_Error('aiditor_editing_rewrite_fields_required', '请至少选择一个要重写的字段。', array('status' => 400));
+            }
+
+            $rewrite_result   = $this->rewriter->rewrite_fields($fields, $field_schema, $rewrite_fields, $instruction, $runtime_settings);
+            $merged_fields    = $this->sanitize_editing_preview_fields(is_array($rewrite_result['merged_fields'] ?? null) ? $rewrite_result['merged_fields'] : array(), $field_schema);
+            $changed_fields   = $this->sanitize_editing_preview_fields(is_array($rewrite_result['changed_fields'] ?? null) ? $rewrite_result['changed_fields'] : array(), $field_schema);
+            $changed_keys     = $this->sanitize_string_array($rewrite_result['changed_keys'] ?? array());
+            $requested_keys   = $this->sanitize_string_array($rewrite_result['requested_keys'] ?? array());
+            $unchanged_keys   = $this->sanitize_string_array($rewrite_result['unchanged_keys'] ?? array());
+
+            return rest_ensure_response(
+                array(
+                    'field_schema'      => $field_schema,
+                    'rewritten_fields'  => $merged_fields,
+                    'changed_fields'    => $changed_fields,
+                    'rewritten_keys'    => $changed_keys,
+                    'requested_keys'    => $requested_keys,
+                    'unchanged_keys'    => $unchanged_keys,
+                )
+            );
+        } catch (Throwable $exception) {
+            return new WP_Error('aiditor_editing_rewrite_failed', $exception->getMessage(), array('status' => 400));
+        }
+    }
+
+    public function editing_publish_fields(WP_REST_Request $request)
+    {
+        try {
+            $payload          = $this->get_request_payload($request);
+            $field_schema     = is_array($payload['field_schema'] ?? null) ? $payload['field_schema'] : $this->get_default_editing_field_schema();
+            $extracted_fields = is_array($payload['extracted_fields'] ?? null) ? $payload['extracted_fields'] : array();
+            $rewritten_fields = is_array($payload['rewritten_fields'] ?? null) ? $payload['rewritten_fields'] : array();
+            $publish_fields   = $this->sanitize_string_array($payload['publish_fields'] ?? array());
+            $field_mapping    = is_array($payload['field_mapping'] ?? null) ? $payload['field_mapping'] : array();
+            $source_url       = esc_url_raw(trim((string) ($payload['source_url'] ?? $extracted_fields['source_url'] ?? $rewritten_fields['source_url'] ?? '')));
+            $page             = is_array($payload['page'] ?? null) ? $payload['page'] : array();
+            $post_type        = sanitize_key((string) ($payload['post_type'] ?? 'post'));
+            $post_status      = sanitize_key((string) ($payload['post_status'] ?? $this->get_current_default_post_status()));
+            $target_taxonomy  = sanitize_key((string) ($payload['target_taxonomy'] ?? 'category'));
+            $target_term_id   = (int) ($payload['target_term_id'] ?? 0);
+            $extra_tax_terms  = is_array($payload['extra_tax_terms'] ?? null) ? $payload['extra_tax_terms'] : array();
+            $author_id        = $this->get_current_admin_author_id();
+            $final_fields     = $this->build_editing_publish_fields($field_schema, $extracted_fields, $rewritten_fields, $publish_fields);
+
+            if (empty($final_fields)) {
+                return new WP_Error('aiditor_editing_publish_fields_required', '请至少选择一个要发布的字段。', array('status' => 400));
+            }
+
+            $this->taxonomy_browser->validate_selection(
+                array(
+                    'post_type'       => $post_type,
+                    'target_taxonomy' => $target_taxonomy,
+                    'target_term_id'  => $target_term_id,
+                    'extra_tax_terms' => $extra_tax_terms,
+                )
+            );
+
+            $post_id = $this->draft_writer->write_mapped(
+                array(
+                    'field_schema' => $field_schema,
+                    'fields'       => $final_fields,
+                ),
+                array(
+                    'source_url'   => $source_url,
+                    'source_title' => (string) ($final_fields['title'] ?? $page['title'] ?? ''),
+                    'source_summary' => (string) ($final_fields['summary'] ?? ''),
+                ),
+                array(
+                    'post_type'       => $post_type,
+                    'post_status'     => $post_status,
+                    'target_taxonomy' => $target_taxonomy,
+                    'target_term_id'  => $target_term_id,
+                    'extra_tax_terms' => $extra_tax_terms,
+                    'author_id'       => $author_id,
+                ),
+                $field_mapping
+            );
+
+            return rest_ensure_response(
+                array(
+                    'post_id'    => $post_id,
+                    'edit_link'  => function_exists('get_edit_post_link') ? (string) get_edit_post_link($post_id, 'raw') : '',
+                    'message'    => '文章已创建。',
+                    'fields'     => $final_fields,
+                )
+            );
+        } catch (Throwable $exception) {
+            return new WP_Error('aiditor_editing_publish_failed', $exception->getMessage(), array('status' => 400));
         }
     }
 
@@ -868,17 +1231,7 @@ class AIditor_REST_Controller
             throw new RuntimeException('缺少可用 AI 模型配置，请先在插件设置中新增并保存模型。');
         }
 
-        $reflection = new ReflectionClass($this->rewriter);
-        $endpoint_method = $reflection->getMethod('build_endpoint');
-        $endpoint_method->setAccessible(true);
-        $post_method = $reflection->getMethod('post_json');
-        $post_method->setAccessible(true);
-        $extract_method = $reflection->getMethod('extract_message_content');
-        $extract_method->setAccessible(true);
-
-        $response = $post_method->invoke(
-            $this->rewriter,
-            (string) $endpoint_method->invoke($this->rewriter, (string) $settings['base_url']),
+        $response = $this->rewriter->complete_chat(
             array(
                 'model'       => (string) $settings['model'],
                 'temperature' => 0.2,
@@ -894,14 +1247,10 @@ class AIditor_REST_Controller
                     ),
                 ),
             ),
-            array(
-                'Authorization' => 'Bearer ' . trim((string) $settings['api_key']),
-                'Content-Type'  => 'application/json',
-            ),
-            (int) $settings['request_timeout']
+            $settings
         );
 
-        $content = (string) $extract_method->invoke($this->rewriter, $response);
+        $content = $this->rewriter->extract_completion_content($response);
         if (preg_match('/```(?:json)?\s*(\{.*\})\s*```/s', $content, $matches)) {
             $content = $matches[1];
         }
@@ -946,6 +1295,196 @@ class AIditor_REST_Controller
                 'description' => '页面主要正文内容。不要包含导航、栏目、面包屑、发布时间、阅读量、推荐阅读、评论区或页脚。',
             ),
         );
+    }
+
+    protected function get_default_editing_field_schema(): array
+    {
+        return array(
+            array(
+                'key'      => 'title',
+                'label'    => '标题',
+                'type'     => 'text',
+                'required' => true,
+            ),
+            array(
+                'key'      => 'date',
+                'label'    => '发布时间',
+                'type'     => 'text',
+                'required' => false,
+            ),
+            array(
+                'key'      => 'keywords',
+                'label'    => '关键词',
+                'type'     => 'array',
+                'required' => false,
+            ),
+            array(
+                'key'      => 'summary',
+                'label'    => '摘要',
+                'type'     => 'textarea',
+                'required' => false,
+            ),
+            array(
+                'key'      => 'content',
+                'label'    => '正文',
+                'type'     => 'html',
+                'required' => false,
+            ),
+            array(
+                'key'      => 'author',
+                'label'    => '作者',
+                'type'     => 'text',
+                'required' => false,
+            ),
+            array(
+                'key'      => 'source_url',
+                'label'    => '来源链接',
+                'type'     => 'url',
+                'required' => false,
+            ),
+        );
+    }
+
+    protected function get_default_rewrite_fields(array $field_schema): array
+    {
+        $allowed_types = array('text', 'textarea', 'html');
+        $selected = array();
+
+        foreach ($field_schema as $field) {
+            if (! is_array($field)) {
+                continue;
+            }
+
+            $key = sanitize_key((string) ($field['key'] ?? ''));
+            $type = (string) ($field['type'] ?? 'text');
+
+            if ('' === $key || ! in_array($type, $allowed_types, true)) {
+                continue;
+            }
+
+            if ('source_url' === $key || 'date' === $key) {
+                continue;
+            }
+
+            $selected[] = $key;
+        }
+
+        return array_values(array_unique($selected));
+    }
+
+    protected function sanitize_string_array($value): array
+    {
+        if (! is_array($value)) {
+            return array();
+        }
+
+        $items = array();
+
+        foreach ($value as $item) {
+            if (! is_scalar($item)) {
+                continue;
+            }
+
+            $clean = sanitize_key((string) $item);
+            if ('' === $clean) {
+                continue;
+            }
+
+            $items[] = $clean;
+        }
+
+        return array_values(array_unique($items));
+    }
+
+    protected function resolve_request_model_settings(array $payload): array
+    {
+        $settings = $this->settings->get();
+        $model_profile_id = sanitize_key((string) ($payload['model_profile_id'] ?? $settings['default_model_profile_id'] ?? ''));
+        $model_settings = $this->settings->resolve_model_settings($model_profile_id);
+
+        if ('' !== $model_profile_id && $model_profile_id !== (string) ($model_settings['model_profile_id'] ?? '')) {
+            throw new RuntimeException('未找到所选 AI 模型配置。');
+        }
+
+        if (
+            '' === trim((string) ($model_settings['base_url'] ?? ''))
+            || '' === trim((string) ($model_settings['api_key'] ?? ''))
+            || '' === trim((string) ($model_settings['model'] ?? ''))
+        ) {
+            throw new RuntimeException('所选 AI 模型配置不完整，请补全接口地址、API 密钥和模型名称。');
+        }
+
+        return $model_settings;
+    }
+
+    protected function sanitize_editing_preview_fields(array $fields, array $field_schema): array
+    {
+        $schema_map = array();
+
+        foreach ($field_schema as $field) {
+            if (! is_array($field)) {
+                continue;
+            }
+
+            $key = sanitize_key((string) ($field['key'] ?? ''));
+            if ('' !== $key) {
+                $schema_map[$key] = (string) ($field['type'] ?? 'text');
+            }
+        }
+
+        foreach ($fields as $key => $value) {
+            $clean_key = sanitize_key((string) $key);
+            if ('html' !== ($schema_map[$clean_key] ?? '')) {
+                continue;
+            }
+
+            $fields[$key] = function_exists('wp_kses_post') ? wp_kses_post((string) $value) : (string) $value;
+        }
+
+        return $fields;
+    }
+
+    protected function build_editing_publish_fields(array $field_schema, array $extracted_fields, array $rewritten_fields, array $publish_fields): array
+    {
+        $allowed = array();
+
+        foreach ($field_schema as $field) {
+            if (! is_array($field)) {
+                continue;
+            }
+
+            $key = sanitize_key((string) ($field['key'] ?? ''));
+            if ('' !== $key) {
+                $allowed[$key] = true;
+            }
+        }
+
+        $allowed['source_url'] = true;
+        $final_fields = array();
+
+        foreach ($publish_fields as $key) {
+            if (! isset($allowed[$key])) {
+                continue;
+            }
+
+            if (array_key_exists($key, $rewritten_fields) && '' !== trim((string) (is_array($rewritten_fields[$key]) ? wp_json_encode($rewritten_fields[$key]) : $rewritten_fields[$key]))) {
+                $final_fields[$key] = $rewritten_fields[$key];
+                continue;
+            }
+
+            if (array_key_exists($key, $extracted_fields)) {
+                $final_fields[$key] = $extracted_fields[$key];
+            }
+        }
+
+        if (! isset($final_fields['source_url'])) {
+            $source_url = (string) ($rewritten_fields['source_url'] ?? $extracted_fields['source_url'] ?? '');
+            if ('' !== $source_url) {
+                $final_fields['source_url'] = $source_url;
+            }
+        }
+
+        return $final_fields;
     }
 
     protected function get_default_admin_author_id(): int

@@ -329,10 +329,10 @@ class AIditor_Source_Researcher
     protected function should_verify_ssl(): bool
     {
         if (function_exists('apply_filters')) {
-            return (bool) apply_filters('aiditor_sslverify', false);
+            return (bool) apply_filters('aiditor_sslverify', true);
         }
 
-        return false;
+        return true;
     }
 
     protected static function extract_search_host(string $url): string

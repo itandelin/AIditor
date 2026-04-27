@@ -161,33 +161,12 @@ class AIditor_AI_Extractor
 
     protected function post_completion(array $payload, array $settings): array
     {
-        $reflection = new ReflectionClass($this->rewriter);
-        $method     = $reflection->getMethod('post_json');
-        $method->setAccessible(true);
-
-        $endpoint_method = $reflection->getMethod('build_endpoint');
-        $endpoint_method->setAccessible(true);
-        $endpoint = (string) $endpoint_method->invoke($this->rewriter, (string) $settings['base_url']);
-
-        return $method->invoke(
-            $this->rewriter,
-            $endpoint,
-            $payload,
-            array(
-                'Authorization' => 'Bearer ' . trim((string) $settings['api_key']),
-                'Content-Type'  => 'application/json',
-            ),
-            (int) $settings['request_timeout']
-        );
+        return $this->rewriter->complete_chat($payload, $settings);
     }
 
     protected function extract_message_content(array $response): string
     {
-        $reflection = new ReflectionClass($this->rewriter);
-        $method     = $reflection->getMethod('extract_message_content');
-        $method->setAccessible(true);
-
-        return (string) $method->invoke($this->rewriter, $response);
+        return $this->rewriter->extract_completion_content($response);
     }
 
     protected function decode_json_object(string $content): array
@@ -200,10 +179,73 @@ class AIditor_AI_Extractor
 
         $decoded = json_decode($content, true);
 
-        if (! is_array($decoded)) {
-            throw new RuntimeException('AI 抽取结果不是有效的 JSON 对象。');
+        if (is_array($decoded)) {
+            return $decoded;
         }
 
-        return $decoded;
+        $json = $this->extract_first_json_object($content);
+        if ('' !== $json) {
+            $decoded = json_decode($json, true);
+            if (is_array($decoded)) {
+                return $decoded;
+            }
+        }
+
+        throw new RuntimeException('AI 抽取结果不是有效的 JSON 对象。');
+    }
+
+    protected function extract_first_json_object(string $content): string
+    {
+        $length = strlen($content);
+        $start = strpos($content, '{');
+
+        if (false === $start) {
+            return '';
+        }
+
+        $depth = 0;
+        $in_string = false;
+        $escaped = false;
+
+        for ($index = $start; $index < $length; $index++) {
+            $char = $content[$index];
+
+            if ($in_string) {
+                if ($escaped) {
+                    $escaped = false;
+                    continue;
+                }
+
+                if ('\\' === $char) {
+                    $escaped = true;
+                    continue;
+                }
+
+                if ('"' === $char) {
+                    $in_string = false;
+                }
+
+                continue;
+            }
+
+            if ('"' === $char) {
+                $in_string = true;
+                continue;
+            }
+
+            if ('{' === $char) {
+                $depth++;
+                continue;
+            }
+
+            if ('}' === $char) {
+                $depth--;
+                if (0 === $depth) {
+                    return substr($content, $start, $index - $start + 1);
+                }
+            }
+        }
+
+        return '';
     }
 }

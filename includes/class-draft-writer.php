@@ -51,6 +51,8 @@ class AIditor_Draft_Writer
         }
 
         if ($existing_post_id > 0) {
+            $this->assert_can_update_existing_post($existing_post_id, $source);
+
             if (! function_exists('wp_update_post')) {
                 throw new RuntimeException('当前环境缺少 WordPress 更新能力，无法替换已有文章。');
             }
@@ -133,6 +135,159 @@ class AIditor_Draft_Writer
         return $post_id;
     }
 
+    public function write_mapped(array $article, array $source, array $import_request, array $field_mapping): int
+    {
+        if (! function_exists('wp_insert_post')) {
+            throw new RuntimeException('当前环境缺少 WordPress 运行时，无法创建或更新文章。');
+        }
+
+        $fields = is_array($article['fields'] ?? null) ? $article['fields'] : array();
+        $post_type = sanitize_key((string) ($import_request['post_type'] ?? 'post'));
+        $post_status = $this->resolve_post_status((string) ($import_request['post_status'] ?? 'draft'));
+        $target_taxonomy = sanitize_key((string) ($import_request['target_taxonomy'] ?? ''));
+        $target_term_id = (int) ($import_request['target_term_id'] ?? 0);
+        $extra_tax_terms = is_array($import_request['extra_tax_terms'] ?? null) ? $import_request['extra_tax_terms'] : array();
+        $author_id = $this->resolve_author_id((int) ($import_request['author_id'] ?? 0));
+        $existing_post_id = (int) ($import_request['existing_post_id'] ?? 0);
+        $post_data = array(
+            'post_type'   => $post_type,
+            'post_status' => $post_status,
+        );
+        $meta_updates = array();
+        $taxonomy_updates = array();
+
+        if ($author_id > 0) {
+            $post_data['post_author'] = $author_id;
+        }
+
+        foreach ($field_mapping as $mapping) {
+            if (! is_array($mapping)) {
+                continue;
+            }
+
+            $source_key = sanitize_key((string) ($mapping['source'] ?? ''));
+            $destination_type = sanitize_key((string) ($mapping['destination_type'] ?? ''));
+            $destination = sanitize_key((string) ($mapping['destination'] ?? ''));
+
+            if ('' === $source_key || '' === $destination_type || '' === $destination || ! array_key_exists($source_key, $fields)) {
+                continue;
+            }
+
+            $value = $fields[$source_key];
+
+            if ('core' === $destination_type) {
+                $this->apply_core_mapping($post_data, $destination, $value, $source, $source_key);
+                continue;
+            }
+
+            if ('meta' === $destination_type) {
+                $meta_updates[$destination] = $this->normalize_meta_value($value);
+                continue;
+            }
+
+            if ('taxonomy' === $destination_type) {
+                $taxonomy_updates[$destination] = $this->merge_taxonomy_terms(
+                    $taxonomy_updates[$destination] ?? array(),
+                    $this->normalize_taxonomy_terms($value)
+                );
+            }
+        }
+
+        if (empty($post_data['post_title'])) {
+            $post_data['post_title'] = (string) ($fields['title'] ?? $source['source_title'] ?? '');
+        }
+
+        if (! isset($post_data['post_excerpt'])) {
+            $post_data['post_excerpt'] = trim((string) ($fields['summary'] ?? $source['source_summary'] ?? ''));
+        }
+
+        if (! isset($post_data['post_content'])) {
+            $post_data['post_content'] = self::convert_html_to_block_content((string) ($fields['content'] ?? ''));
+        }
+
+        if ($existing_post_id > 0) {
+            $this->assert_can_update_existing_post($existing_post_id, $source);
+
+            if (! function_exists('wp_update_post')) {
+                throw new RuntimeException('当前环境缺少 WordPress 更新能力，无法替换已有文章。');
+            }
+
+            $post_data['ID'] = $existing_post_id;
+            $post_id = wp_update_post(wp_slash($post_data), true);
+        } else {
+            $post_id = wp_insert_post(wp_slash($post_data), true);
+        }
+
+        if (is_wp_error($post_id)) {
+            throw new RuntimeException($post_id->get_error_message());
+        }
+
+        $post_id = (int) $post_id;
+
+        if ('' !== $target_taxonomy && $target_term_id > 0) {
+            $result = wp_set_object_terms($post_id, array($target_term_id), $target_taxonomy, false);
+            if (is_wp_error($result)) {
+                throw new RuntimeException($result->get_error_message());
+            }
+        }
+
+        foreach ($extra_tax_terms as $taxonomy => $term_ids) {
+            if (! is_string($taxonomy) || ! is_array($term_ids) || empty($term_ids)) {
+                continue;
+            }
+
+            $result = wp_set_object_terms($post_id, array_values(array_unique(array_map('intval', $term_ids))), $taxonomy, false);
+            if (is_wp_error($result)) {
+                throw new RuntimeException($result->get_error_message());
+            }
+        }
+
+        foreach ($taxonomy_updates as $taxonomy => $term_names) {
+            if ('' === $taxonomy || empty($term_names)) {
+                continue;
+            }
+
+            $result = wp_set_object_terms($post_id, $term_names, $taxonomy, true);
+            if (is_wp_error($result)) {
+                throw new RuntimeException($result->get_error_message());
+            }
+        }
+
+        $effective_post_type = function_exists('get_post_type') ? (string) get_post_type($post_id) : $post_type;
+        $this->write_single_category_name_tag($post_id, $effective_post_type ?: $post_type, $target_taxonomy, $target_term_id);
+
+        update_post_meta($post_id, '_aiditor_ingest_source_url', (string) ($source['source_url'] ?? ''));
+
+        foreach ($meta_updates as $meta_key => $meta_value) {
+            update_post_meta($post_id, $meta_key, $meta_value);
+        }
+
+        return $post_id;
+    }
+
+    protected function assert_can_update_existing_post(int $post_id, array $source): void
+    {
+        if ($post_id <= 0 || ! function_exists('get_post_meta')) {
+            throw new RuntimeException('缺少可更新文章的来源校验能力。');
+        }
+
+        $source_site = trim((string) ($source['source_site'] ?? ''));
+        $source_slug = trim((string) ($source['source_slug'] ?? ''));
+        $existing_site = trim((string) get_post_meta($post_id, '_aiditor_ingest_source_site', true));
+        $existing_slug = trim((string) get_post_meta($post_id, '_aiditor_ingest_source_slug', true));
+
+        if (
+            '' === $source_site
+            || '' === $source_slug
+            || '' === $existing_site
+            || '' === $existing_slug
+            || ! hash_equals($existing_site, $source_site)
+            || ! hash_equals($existing_slug, $source_slug)
+        ) {
+            throw new RuntimeException('已有文章来源标识不匹配，已阻止覆盖写入。');
+        }
+    }
+
     public static function build_source_hash(array $source): string
     {
         return sha1((string) ($source['source_slug'] ?? '') . '|' . (string) ($source['source_version'] ?? '') . '|' . (string) ($source['source_markdown'] ?? ''));
@@ -209,8 +364,19 @@ class AIditor_Draft_Writer
                 $value = is_string($encoded) ? $encoded : '';
             }
 
-            update_post_meta($post_id, $meta_key, (string) $value);
+            update_post_meta($post_id, $this->get_generic_meta_key($meta_key), (string) $value);
         }
+    }
+
+    protected function get_generic_meta_key(string $key): string
+    {
+        $key = sanitize_key($key);
+
+        if ('' === $key || 0 === strpos($key, '_aiditor_')) {
+            return $key;
+        }
+
+        return '_aiditor_field_' . $key;
     }
 
     protected function resolve_post_status(string $post_status): string
@@ -218,6 +384,78 @@ class AIditor_Draft_Writer
         $post_status = trim($post_status);
 
         return in_array($post_status, array('draft', 'pending', 'private', 'publish'), true) ? $post_status : 'draft';
+    }
+
+    protected function apply_core_mapping(array &$post_data, string $destination, $value, array $source, string $source_key): void
+    {
+        if ('post_title' === $destination) {
+            $post_data['post_title'] = trim((string) $value);
+            return;
+        }
+
+        if ('post_excerpt' === $destination) {
+            $post_data['post_excerpt'] = trim((string) $value);
+            return;
+        }
+
+        if ('post_content' === $destination) {
+            $title = 'title' === $source_key ? trim((string) $value) : (string) ($source['source_title'] ?? '');
+            $content_html = AIditor_Content_Normalizer::strip_leading_title_heading((string) $value, $title);
+            $post_data['post_content'] = self::convert_html_to_block_content(trim($content_html));
+        }
+    }
+
+    protected function normalize_meta_value($value): string
+    {
+        if (is_array($value) || is_object($value)) {
+            $encoded = function_exists('wp_json_encode')
+                ? wp_json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+                : json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+            return is_string($encoded) ? $encoded : '';
+        }
+
+        return trim((string) $value);
+    }
+
+    protected function normalize_taxonomy_terms($value): array
+    {
+        $terms = array();
+
+        if (is_array($value)) {
+            foreach ($value as $item) {
+                if (! is_scalar($item)) {
+                    continue;
+                }
+
+                $name = trim((string) $item);
+                if ('' !== $name) {
+                    $terms[] = $name;
+                }
+            }
+
+            return array_values(array_unique($terms));
+        }
+
+        $text = trim((string) $value);
+        if ('' === $text) {
+            return array();
+        }
+
+        $parts = preg_split('/[\r\n,，]+/u', $text) ?: array();
+        foreach ($parts as $part) {
+            $name = trim((string) $part);
+            if ('' !== $name) {
+                $terms[] = $name;
+            }
+        }
+
+        return array_values(array_unique($terms));
+    }
+
+    protected function merge_taxonomy_terms(array $current, array $next): array
+    {
+        return array_values(array_unique(array_merge($current, $next)));
     }
 
     protected function resolve_author_id(int $author_id): int

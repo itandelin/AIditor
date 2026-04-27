@@ -48,6 +48,21 @@ class AIditor_Deduper
         return null;
     }
 
+    public function has_aiditor_source_identity(int $post_id, string $source_site, string $source_slug): bool
+    {
+        if ($post_id <= 0 || ! function_exists('get_post_meta')) {
+            return false;
+        }
+
+        $existing_site = trim((string) get_post_meta($post_id, '_aiditor_ingest_source_site', true));
+        $existing_slug = trim((string) get_post_meta($post_id, '_aiditor_ingest_source_slug', true));
+
+        return '' !== $existing_site
+            && '' !== $existing_slug
+            && hash_equals($existing_site, trim($source_site))
+            && hash_equals($existing_slug, trim($source_slug));
+    }
+
     public function is_post_source_hash_current(int $post_id, string $source_hash): bool
     {
         $source_hash = trim($source_hash);

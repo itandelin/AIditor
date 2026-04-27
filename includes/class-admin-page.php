@@ -7,7 +7,10 @@ class AIditor_Admin_Page
 
     protected AIditor_Run_Repository $runs;
 
-    protected string $hook_suffix = '';
+    /**
+     * @var array<string, string>
+     */
+    protected array $hook_suffixes = array();
 
     public function __construct(
         AIditor_Settings $settings,
@@ -19,18 +22,49 @@ class AIditor_Admin_Page
 
     public function register_page(): void
     {
-        $this->hook_suffix = (string) add_management_page(
+        $parent_slug = 'aiditor';
+
+        $this->hook_suffixes['collection'] = (string) add_menu_page(
             __('AIditor', 'aiditor'),
             __('AIditor', 'aiditor'),
             'manage_options',
-            'aiditor',
-            array($this, 'render_page')
+            $parent_slug,
+            array($this, 'render_collection_page'),
+            'dashicons-edit-page',
+            58
+        );
+
+        $this->hook_suffixes['collection_submenu'] = (string) add_submenu_page(
+            $parent_slug,
+            __('AI采集', 'aiditor'),
+            __('AI采集', 'aiditor'),
+            'manage_options',
+            $parent_slug,
+            array($this, 'render_collection_page')
+        );
+
+        $this->hook_suffixes['editing'] = (string) add_submenu_page(
+            $parent_slug,
+            __('AI编辑', 'aiditor'),
+            __('AI编辑', 'aiditor'),
+            'manage_options',
+            'aiditor-editing',
+            array($this, 'render_editing_page')
+        );
+
+        $this->hook_suffixes['settings'] = (string) add_submenu_page(
+            $parent_slug,
+            __('设置', 'aiditor'),
+            __('设置', 'aiditor'),
+            'manage_options',
+            'aiditor-settings',
+            array($this, 'render_settings_page')
         );
     }
 
     public function enqueue_assets(string $hook_suffix): void
     {
-        if ($hook_suffix !== $this->hook_suffix) {
+        if (! in_array($hook_suffix, $this->hook_suffixes, true)) {
             return;
         }
 
@@ -53,22 +87,43 @@ class AIditor_Admin_Page
             'aiditor-admin',
             'aiditorContentIngest',
             array(
-                'restUrl'  => esc_url_raw(rest_url('aiditor/v1/')),
-                'nonce'    => wp_create_nonce('wp_rest'),
-                'settings' => $this->settings->get_public_settings(),
-                'runs'     => $this->runs->list_runs(100),
+                'restUrl'     => esc_url_raw(rest_url('aiditor/v1/')),
+                'nonce'       => wp_create_nonce('wp_rest'),
+                'settings'    => $this->settings->get_public_settings(),
+                'runs'        => $this->runs->list_runs(100),
+                'currentPage' => $this->get_current_page_key(),
             )
         );
     }
 
-    public function render_page(): void
+    protected function get_current_page_key(): string
+    {
+        $page = isset($_GET['page']) ? sanitize_key((string) $_GET['page']) : 'aiditor';
+
+        if ('aiditor-editing' === $page) {
+            return 'editing';
+        }
+
+        if ('aiditor-settings' === $page) {
+            return 'settings';
+        }
+
+        return 'collection';
+    }
+
+    protected function render_page_header(string $title, string $description): void
+    {
+        ?>
+        <h1><?php echo esc_html($title); ?></h1>
+        <p class="description"><?php echo esc_html($description); ?></p>
+        <?php
+    }
+
+    public function render_collection_page(): void
     {
         ?>
         <div class="wrap aiditor-admin">
-            <h1><?php echo esc_html__('AIditor', 'aiditor'); ?></h1>
-            <p class="description">
-                <?php echo esc_html__('1. 先在“通用采集模板”中填写列表页 URL 并保存模板；2. 再到“导入”中选择模板、模型和目录后创建队列任务；3. 最后在任务列表与任务详情中查看进度和结果。', 'aiditor'); ?>
-            </p>
+            <?php $this->render_page_header(__('AIditor', 'aiditor'), __('1. 先在“通用采集模板”中填写列表页 URL 并保存模板；2. 再到“导入”中选择模板、模型和目录后创建队列任务；3. 最后在任务列表与任务详情中查看进度和结果。', 'aiditor')); ?>
 
             <nav class="nav-tab-wrapper aiditor-tabs" aria-label="<?php echo esc_attr__('内容采集标签页', 'aiditor'); ?>">
                 <button type="button" class="nav-tab nav-tab-active" data-tab-target="import"><?php echo esc_html__('导入', 'aiditor'); ?></button>
@@ -293,56 +348,18 @@ class AIditor_Admin_Page
                     <div class="aiditor-section-header aiditor-settings-header">
                         <div>
                             <h2><?php echo esc_html__('插件设置', 'aiditor'); ?></h2>
-                            <p class="description"><?php echo esc_html__('集中管理 AI 连接、队列吞吐和文章重写风格。', 'aiditor'); ?></p>
+                            <p class="description"><?php echo esc_html__('队列设置与文章风格仍保留在 AI采集 页面中；AI 模型连接配置已迁移到左侧“设置”子菜单。', 'aiditor'); ?></p>
                         </div>
                         <div class="aiditor-subtabs" aria-label="<?php echo esc_attr__('设置分类', 'aiditor'); ?>">
-                            <button type="button" class="button button-small is-active" data-settings-tab="ai"><?php echo esc_html__('AI 设置', 'aiditor'); ?></button>
-                            <button type="button" class="button button-small" data-settings-tab="queue"><?php echo esc_html__('队列设置', 'aiditor'); ?></button>
+                            <button type="button" class="button button-small is-active" data-settings-tab="queue"><?php echo esc_html__('队列设置', 'aiditor'); ?></button>
                             <button type="button" class="button button-small" data-settings-tab="styles"><?php echo esc_html__('文章风格', 'aiditor'); ?></button>
                         </div>
                     </div>
 
                     <form id="aiditor-settings-form" class="aiditor-settings-form">
-                        <div class="aiditor-settings-pane is-active" data-settings-panel="ai">
-                            <input id="aiditor-model-profiles-json" name="model_profiles" type="hidden" />
-                            <div class="aiditor-model-workbench">
-                                <div class="aiditor-setting-block aiditor-model-form">
-                                    <h3><?php echo esc_html__('新增或编辑模型', 'aiditor'); ?></h3>
-                                    <p class="description"><?php echo esc_html__('插件不会预置任何模型、接口地址或密钥；请在这里自行新增并保存多个 OpenAI 兼容模型。', 'aiditor'); ?></p>
-                                    <input id="aiditor-model-profile-id" type="hidden" />
-                                    <div class="aiditor-form-grid aiditor-form-grid-two">
-                                        <div class="aiditor-field"><label for="aiditor-model-profile-name"><?php echo esc_html__('配置名称', 'aiditor'); ?></label><input id="aiditor-model-profile-name" type="text" placeholder="<?php echo esc_attr__('例如：GPT-4.1 正式写作', 'aiditor'); ?>" /></div>
-                                        <div class="aiditor-field"><label for="aiditor-model-profile-model"><?php echo esc_html__('模型名称', 'aiditor'); ?></label><input id="aiditor-model-profile-model" type="text" class="regular-text code" placeholder="your-model-name" /></div>
-                                        <div class="aiditor-field aiditor-field-wide"><label for="aiditor-model-profile-base-url"><?php echo esc_html__('接口地址', 'aiditor'); ?></label><input id="aiditor-model-profile-base-url" type="url" class="regular-text code" placeholder="https://your-ai-endpoint.example/v1" /></div>
-                                        <div class="aiditor-field aiditor-field-wide"><label for="aiditor-model-profile-api-key"><?php echo esc_html__('API 密钥', 'aiditor'); ?></label><input id="aiditor-model-profile-api-key" type="password" class="regular-text code" autocomplete="off" /><p id="aiditor-model-profile-key-hint" class="description"></p></div>
-                                    </div>
-                                    <div class="aiditor-form-grid aiditor-form-grid-three">
-                                        <div class="aiditor-field"><label for="aiditor-model-profile-temperature"><?php echo esc_html__('温度', 'aiditor'); ?></label><input id="aiditor-model-profile-temperature" type="number" min="0" max="2" step="0.1" /><p class="description"><?php echo esc_html__('控制输出风格的发散程度。值越低越稳定，值越高越灵活，常用 0.2 到 0.7。', 'aiditor'); ?></p></div>
-                                        <div class="aiditor-field"><label for="aiditor-model-profile-max-tokens"><?php echo esc_html__('最大 Tokens', 'aiditor'); ?></label><input id="aiditor-model-profile-max-tokens" type="number" min="256" max="16384" step="1" /><p class="description"><?php echo esc_html__('限制单次返回内容的最大长度。值越大，越适合长文生成，但耗时和成本通常也会更高。', 'aiditor'); ?></p></div>
-                                        <div class="aiditor-field"><label for="aiditor-model-profile-timeout"><?php echo esc_html__('请求超时', 'aiditor'); ?></label><input id="aiditor-model-profile-timeout" type="number" min="5" max="300" step="1" /><p class="description"><?php echo esc_html__('等待模型响应的最长秒数。模型较慢、网络较差或生成长文时，可以适当调大。', 'aiditor'); ?></p></div>
-                                    </div>
-                                    <div class="aiditor-actions">
-                                        <button type="button" class="button button-primary" id="aiditor-save-model-profile"><?php echo esc_html__('保存模型配置', 'aiditor'); ?></button>
-                                        <button type="button" class="button" id="aiditor-clear-model-profile"><?php echo esc_html__('清空表单', 'aiditor'); ?></button>
-                                    </div>
-                                </div>
-                                <div class="aiditor-setting-block aiditor-model-library">
-                                    <div class="aiditor-card-heading-row">
-                                        <div>
-                                            <h3><?php echo esc_html__('已保存模型', 'aiditor'); ?></h3>
-                                            <p class="description"><?php echo esc_html__('默认模型仅用于模板分析，可留空；创建队列任务时仍可另选具体模型。', 'aiditor'); ?></p>
-                                        </div>
-                                    </div>
-                                    <div class="aiditor-field">
-                                        <label for="aiditor-default-model-profile"><?php echo esc_html__('默认模型', 'aiditor'); ?></label>
-                                        <select id="aiditor-default-model-profile" name="default_model_profile_id"></select>
-                                    </div>
-                                    <div id="aiditor-model-profile-list" class="aiditor-model-profile-list"></div>
-                                </div>
-                            </div>
-                        </div>
+                        <input id="aiditor-model-profiles-json" name="model_profiles" type="hidden" />
 
-                        <div class="aiditor-settings-pane" data-settings-panel="queue" hidden>
+                        <div class="aiditor-settings-pane is-active" data-settings-panel="queue">
                             <div class="aiditor-setting-block">
                                 <h3><?php echo esc_html__('worker 执行策略', 'aiditor'); ?></h3>
                                 <div class="aiditor-form-grid aiditor-form-grid-four">
@@ -416,7 +433,7 @@ class AIditor_Admin_Page
                             <h3><?php echo esc_html__('开始前', 'aiditor'); ?></h3>
                             <ol class="aiditor-guide-list">
                                 <li><?php echo esc_html__('先到“设置”中的“AI 设置”里新增至少一个可用模型，并点击“保存模型配置”。', 'aiditor'); ?></li>
-                                <li><?php echo esc_html__('如需调整默认文章状态、并发数、轮询间隔和文章风格，可在“队列设置”和“文章风格”里先配置。', 'aiditor'); ?></li>
+                                <li><?php echo esc_html__('如需调整默认文章状态、并发数、轮询间隔和文章风格，可在“AI采集”中的队列设置和文章风格里先配置。', 'aiditor'); ?></li>
                             </ol>
                         </div>
 
@@ -460,6 +477,207 @@ class AIditor_Admin_Page
                     </div>
                 </div>
             </section>
+        </div>
+        <?php
+    }
+
+    public function render_editing_page(): void
+    {
+        $default_extract_instruction = '请提取标题、发布时间、关键词、摘要、正文与作者。正文只保留主体内容。';
+        $default_rewrite_instruction = '请在保留事实准确的前提下，用更流畅、更适合中文资讯文章的表达方式重写。';
+        ?>
+        <div class="wrap aiditor-admin">
+            <?php $this->render_page_header(__('AIditor · AI编辑', 'aiditor'), __('输入一篇文章详情页 URL，抽取字段、勾选需要 AI 重写的内容，并将选中的结果发布到文章或自定义文章类型。', 'aiditor')); ?>
+
+            <div class="aiditor-card aiditor-settings-shell">
+                <div class="aiditor-section-header aiditor-settings-header">
+                    <div>
+                        <h2><?php echo esc_html__('AI编辑工作台', 'aiditor'); ?></h2>
+                        <p class="description"><?php echo esc_html__('先选择模型并抓取详情页，再重写所选字段，最后配置发布目标与字段映射。', 'aiditor'); ?></p>
+                    </div>
+                    <span class="aiditor-pill"><?php echo esc_html__('MVP', 'aiditor'); ?></span>
+                </div>
+
+                <form id="aiditor-editing-form" class="aiditor-settings-form">
+                    <div class="aiditor-setting-block">
+                        <div class="aiditor-form-grid aiditor-form-grid-two">
+                            <div class="aiditor-field aiditor-field-wide">
+                                <label for="aiditor-editing-url"><?php echo esc_html__('详情页 URL', 'aiditor'); ?></label>
+                                <input id="aiditor-editing-url" type="url" class="regular-text code" placeholder="https://example.com/article-detail" />
+                            </div>
+                            <div class="aiditor-field">
+                                <label for="aiditor-editing-model-profile"><?php echo esc_html__('AI 模型', 'aiditor'); ?></label>
+                                <select id="aiditor-editing-model-profile"></select>
+                            </div>
+                        </div>
+
+                        <div class="aiditor-form-grid aiditor-form-grid-two">
+                            <div class="aiditor-field">
+                                <label for="aiditor-editing-extract-instruction"><?php echo esc_html__('抽取说明', 'aiditor'); ?></label>
+                                <textarea id="aiditor-editing-extract-instruction" rows="4" placeholder="<?php echo esc_attr__('例如：请提取标题、发布时间、关键词、摘要、正文与作者。正文只保留主体内容。', 'aiditor'); ?>"><?php echo esc_textarea($default_extract_instruction); ?></textarea>
+                            </div>
+                            <div class="aiditor-field">
+                                <label for="aiditor-editing-rewrite-instruction"><?php echo esc_html__('重写说明', 'aiditor'); ?></label>
+                                <textarea id="aiditor-editing-rewrite-instruction" rows="4" placeholder="<?php echo esc_attr__('例如：请在保留事实准确的前提下，用更流畅、更适合中文资讯文章的表达方式重写。', 'aiditor'); ?>"><?php echo esc_textarea($default_rewrite_instruction); ?></textarea>
+                            </div>
+                        </div>
+
+                        <div class="aiditor-actions aiditor-editing-workflow-actions">
+                            <button type="button" class="button button-primary" id="aiditor-editing-extract-button"><?php echo esc_html__('开始采集', 'aiditor'); ?></button>
+                            <span class="aiditor-editing-workflow-step"><?php echo esc_html__('→ 勾选重写项 →', 'aiditor'); ?></span>
+                            <button type="button" class="button button-primary" id="aiditor-editing-rewrite-button"><?php echo esc_html__('开始重写', 'aiditor'); ?></button>
+                            <span class="aiditor-editing-workflow-step"><?php echo esc_html__('→ 勾选发布项', 'aiditor'); ?></span>
+                        </div>
+                        <div id="aiditor-editing-notice" class="aiditor-notice" aria-live="polite"></div>
+                    </div>
+                </form>
+            </div>
+
+            <div class="aiditor-editing-shell">
+                <section class="aiditor-card aiditor-editing-column">
+                    <div class="aiditor-card-heading-row">
+                        <div>
+                            <h2><?php echo esc_html__('采集内容', 'aiditor'); ?></h2>
+                            <p class="description"><?php echo esc_html__('勾选左侧字段后，这些内容会参与 AI 重写。', 'aiditor'); ?></p>
+                        </div>
+                    </div>
+                    <div id="aiditor-editing-source-fields" class="aiditor-editing-field-list">
+                        <p class="description"><?php echo esc_html__('采集完成后，这里会显示标题、发布时间、关键词、摘要、正文等字段。', 'aiditor'); ?></p>
+                    </div>
+                </section>
+
+                <section class="aiditor-card aiditor-editing-column">
+                    <div class="aiditor-card-heading-row">
+                        <div>
+                            <h2><?php echo esc_html__('重写结果', 'aiditor'); ?></h2>
+                            <p class="description"><?php echo esc_html__('勾选右侧字段后，这些内容会参与发布。未勾选的字段不会写入文章。', 'aiditor'); ?></p>
+                        </div>
+                    </div>
+                    <div id="aiditor-editing-rewritten-fields" class="aiditor-editing-field-list">
+                        <p class="description"><?php echo esc_html__('完成重写后，这里会显示 AI 输出的字段结果。', 'aiditor'); ?></p>
+                    </div>
+                </section>
+            </div>
+
+            <div class="aiditor-card aiditor-settings-shell aiditor-editing-publish-shell">
+                <div class="aiditor-section-header aiditor-settings-header">
+                    <div>
+                        <h2><?php echo esc_html__('发布设置', 'aiditor'); ?></h2>
+                        <p class="description"><?php echo esc_html__('选择文章类型、分类与状态，并配置每个字段发布到哪个 WordPress 字段或分类法。', 'aiditor'); ?></p>
+                    </div>
+                </div>
+
+                <form id="aiditor-editing-publish-form" class="aiditor-settings-form">
+                    <div class="aiditor-setting-block">
+                        <div class="aiditor-form-grid aiditor-form-grid-three">
+                            <div class="aiditor-field">
+                                <label for="aiditor-editing-post-type"><?php echo esc_html__('文章类型', 'aiditor'); ?></label>
+                                <select id="aiditor-editing-post-type" name="post_type"></select>
+                            </div>
+                            <div class="aiditor-field">
+                                <label for="aiditor-editing-target-taxonomy"><?php echo esc_html__('主分类法', 'aiditor'); ?></label>
+                                <select id="aiditor-editing-target-taxonomy" name="target_taxonomy"></select>
+                            </div>
+                            <div class="aiditor-field">
+                                <label for="aiditor-editing-post-status"><?php echo esc_html__('发布状态', 'aiditor'); ?></label>
+                                <select id="aiditor-editing-post-status" name="post_status">
+                                    <option value="draft"><?php echo esc_html__('草稿', 'aiditor'); ?></option>
+                                    <option value="pending"><?php echo esc_html__('待审核', 'aiditor'); ?></option>
+                                    <option value="private"><?php echo esc_html__('私密', 'aiditor'); ?></option>
+                                    <option value="publish"><?php echo esc_html__('已发布', 'aiditor'); ?></option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="aiditor-stack">
+                            <label><?php echo esc_html__('主分类目录', 'aiditor'); ?></label>
+                            <div id="aiditor-editing-term-levels" class="aiditor-term-levels"></div>
+                        </div>
+
+                        <details class="aiditor-mini-disclosure">
+                            <summary><?php echo esc_html__('附加分类法项', 'aiditor'); ?></summary>
+                            <div id="aiditor-editing-extra-taxonomy-fields"></div>
+                            <p class="description"><?php echo esc_html__('可选。可在这里附加标签等非层级分类项。', 'aiditor'); ?></p>
+                        </details>
+                    </div>
+
+                    <div class="aiditor-setting-block">
+                        <div class="aiditor-card-heading-row">
+                            <div>
+                                <h3><?php echo esc_html__('字段映射', 'aiditor'); ?></h3>
+                                <p class="description"><?php echo esc_html__('将采集/重写字段映射到文章标题、摘要、正文、Meta 或分类法。', 'aiditor'); ?></p>
+                            </div>
+                        </div>
+                        <div id="aiditor-editing-field-mapping" class="aiditor-editing-mapping-list">
+                            <p class="description"><?php echo esc_html__('采集完成后，这里会自动生成字段映射表。', 'aiditor'); ?></p>
+                        </div>
+                    </div>
+
+                    <div class="aiditor-actions aiditor-settings-save-row">
+                        <button type="button" class="button button-primary" id="aiditor-editing-publish-button"><?php echo esc_html__('发布选中内容', 'aiditor'); ?></button>
+                    </div>
+                </form>
+                <div id="aiditor-editing-publish-notice" class="aiditor-notice" aria-live="polite"></div>
+            </div>
+        </div>
+        <?php
+    }
+
+    public function render_settings_page(): void
+    {
+        ?>
+        <div class="wrap aiditor-admin">
+            <?php $this->render_page_header(__('AIditor · 设置', 'aiditor'), __('集中管理 AI 模型连接配置；队列设置与文章风格仍保留在“AI采集”页面中。', 'aiditor')); ?>
+
+            <div class="aiditor-card aiditor-settings-shell">
+                <div class="aiditor-section-header aiditor-settings-header">
+                    <div>
+                        <h2><?php echo esc_html__('AI 设置', 'aiditor'); ?></h2>
+                        <p class="description"><?php echo esc_html__('插件不会预置任何模型、接口地址或密钥；请在这里自行新增并保存多个 OpenAI 兼容模型。', 'aiditor'); ?></p>
+                    </div>
+                </div>
+
+                <form id="aiditor-settings-form" class="aiditor-settings-form">
+                    <input id="aiditor-model-profiles-json" name="model_profiles" type="hidden" />
+                    <div class="aiditor-model-workbench">
+                        <div class="aiditor-setting-block aiditor-model-form">
+                            <h3><?php echo esc_html__('新增或编辑模型', 'aiditor'); ?></h3>
+                            <p class="description"><?php echo esc_html__('插件不会预置任何模型、接口地址或密钥；请在这里自行新增并保存多个 OpenAI 兼容模型。', 'aiditor'); ?></p>
+                            <input id="aiditor-model-profile-id" type="hidden" />
+                            <div class="aiditor-form-grid aiditor-form-grid-two">
+                                <div class="aiditor-field"><label for="aiditor-model-profile-name"><?php echo esc_html__('配置名称', 'aiditor'); ?></label><input id="aiditor-model-profile-name" type="text" placeholder="<?php echo esc_attr__('例如：GPT-4.1 正式写作', 'aiditor'); ?>" /></div>
+                                <div class="aiditor-field"><label for="aiditor-model-profile-model"><?php echo esc_html__('模型名称', 'aiditor'); ?></label><input id="aiditor-model-profile-model" type="text" class="regular-text code" placeholder="your-model-name" /></div>
+                                <div class="aiditor-field aiditor-field-wide"><label for="aiditor-model-profile-base-url"><?php echo esc_html__('接口地址', 'aiditor'); ?></label><input id="aiditor-model-profile-base-url" type="url" class="regular-text code" placeholder="https://your-ai-endpoint.example/v1" /></div>
+                                <div class="aiditor-field aiditor-field-wide"><label for="aiditor-model-profile-api-key"><?php echo esc_html__('API 密钥', 'aiditor'); ?></label><input id="aiditor-model-profile-api-key" type="password" class="regular-text code" autocomplete="off" /><p id="aiditor-model-profile-key-hint" class="description"></p></div>
+                            </div>
+                            <div class="aiditor-form-grid aiditor-form-grid-three">
+                                <div class="aiditor-field"><label for="aiditor-model-profile-temperature"><?php echo esc_html__('温度', 'aiditor'); ?></label><input id="aiditor-model-profile-temperature" type="number" min="0" max="2" step="0.1" /><p class="description"><?php echo esc_html__('控制输出风格的发散程度。值越低越稳定，值越高越灵活，常用 0.2 到 0.7。', 'aiditor'); ?></p></div>
+                                <div class="aiditor-field"><label for="aiditor-model-profile-max-tokens"><?php echo esc_html__('最大 Tokens', 'aiditor'); ?></label><input id="aiditor-model-profile-max-tokens" type="number" min="256" max="16384" step="1" /><p class="description"><?php echo esc_html__('限制单次返回内容的最大长度。值越大，越适合长文生成，但耗时和成本通常也会更高。', 'aiditor'); ?></p></div>
+                                <div class="aiditor-field"><label for="aiditor-model-profile-timeout"><?php echo esc_html__('请求超时', 'aiditor'); ?></label><input id="aiditor-model-profile-timeout" type="number" min="5" max="300" step="1" /><p class="description"><?php echo esc_html__('等待模型响应的最长秒数。模型较慢、网络较差或生成长文时，可以适当调大。', 'aiditor'); ?></p></div>
+                            </div>
+                            <div class="aiditor-actions">
+                                <button type="button" class="button button-primary" id="aiditor-save-model-profile"><?php echo esc_html__('保存模型配置', 'aiditor'); ?></button>
+                                <button type="button" class="button" id="aiditor-clear-model-profile"><?php echo esc_html__('清空表单', 'aiditor'); ?></button>
+                            </div>
+                        </div>
+                        <div class="aiditor-setting-block aiditor-model-library">
+                            <div class="aiditor-card-heading-row">
+                                <div>
+                                    <h3><?php echo esc_html__('已保存模型', 'aiditor'); ?></h3>
+                                    <p class="description"><?php echo esc_html__('默认模型仅用于模板分析，可留空；创建队列任务时仍可另选具体模型。', 'aiditor'); ?></p>
+                                </div>
+                            </div>
+                            <div class="aiditor-field">
+                                <label for="aiditor-default-model-profile"><?php echo esc_html__('默认模型', 'aiditor'); ?></label>
+                                <select id="aiditor-default-model-profile" name="default_model_profile_id"></select>
+                            </div>
+                            <div id="aiditor-model-profile-list" class="aiditor-model-profile-list"></div>
+                        </div>
+                    </div>
+
+                </form>
+                <div id="aiditor-settings-notice" class="aiditor-notice" aria-live="polite"></div>
+            </div>
         </div>
         <?php
     }

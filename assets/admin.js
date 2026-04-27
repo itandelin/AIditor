@@ -20,7 +20,21 @@
         },
         genericTemplates: [],
         articleStyles: [],
-        modelProfiles: []
+        modelProfiles: [],
+        editing: {
+            page: null,
+            fieldSchema: [],
+            extractedFields: null,
+            rewrittenFields: null,
+            rewrittenChangedFields: {},
+            rewrittenChangedKeys: [],
+            rewriteRequestedKeys: [],
+            rewriteUnchangedKeys: [],
+            rewriteSelection: [],
+            publishSelection: [],
+            fieldMapping: [],
+            targetConfig: null
+        }
     };
 
     function $(selector, root) {
@@ -56,6 +70,78 @@
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#039;');
+    }
+
+    function sanitizeRichHtml(value) {
+        var template = document.createElement('template');
+        var allowedTags = {
+            A: true, B: true, BLOCKQUOTE: true, BR: true, CODE: true, DIV: true, EM: true,
+            H2: true, H3: true, H4: true, HR: true, I: true, LI: true, OL: true, P: true,
+            PRE: true, SPAN: true, STRONG: true, TABLE: true, TBODY: true, TD: true,
+            TH: true, THEAD: true, TR: true, U: true, UL: true
+        };
+        var allowedAttrs = {
+            A: {href: true, title: true, target: true, rel: true},
+            TD: {colspan: true, rowspan: true},
+            TH: {colspan: true, rowspan: true}
+        };
+
+        function isSafeUrl(url) {
+            return /^(https?:|mailto:|tel:|#|\/)/i.test(String(url || '').trim());
+        }
+
+        function sanitizeNode(node) {
+            var children = Array.prototype.slice.call(node.childNodes || []);
+
+            children.forEach(function (child) {
+                var replacement;
+                var attrs;
+
+                if (child.nodeType === Node.TEXT_NODE) {
+                    return;
+                }
+
+                if (child.nodeType !== Node.ELEMENT_NODE) {
+                    child.parentNode.removeChild(child);
+                    return;
+                }
+
+                if (!allowedTags[child.tagName]) {
+                    replacement = document.createTextNode(child.textContent || '');
+                    child.parentNode.replaceChild(replacement, child);
+                    return;
+                }
+
+                attrs = Array.prototype.slice.call(child.attributes || []);
+                attrs.forEach(function (attr) {
+                    var name = attr.name.toLowerCase();
+                    var tagAttrs = allowedAttrs[child.tagName] || {};
+
+                    if (name.indexOf('on') === 0 || name === 'style' || !tagAttrs[name]) {
+                        child.removeAttribute(attr.name);
+                        return;
+                    }
+
+                    if ((name === 'href' || name === 'src') && !isSafeUrl(attr.value)) {
+                        child.removeAttribute(attr.name);
+                    }
+                });
+
+                if (child.tagName === 'A') {
+                    child.setAttribute('rel', 'noreferrer noopener');
+                    if (child.getAttribute('target') === '_blank') {
+                        child.setAttribute('target', '_blank');
+                    }
+                }
+
+                sanitizeNode(child);
+            });
+        }
+
+        template.innerHTML = String(value || '');
+        sanitizeNode(template.content);
+
+        return template.innerHTML;
     }
 
     function setNotice(element, message, type) {
@@ -459,6 +545,7 @@
     function renderModelProfileOptions(selected) {
         var defaultSelect = $('#aiditor-default-model-profile');
         var runSelect = $('#aiditor-run-model-profile');
+        var editingSelect = $('#aiditor-editing-model-profile');
         var options = state.modelProfiles.map(function (profile) {
             var label = profile.name + '（' + profile.model + '）';
             return '<option value="' + escapeHtml(profile.profile_id) + '">' + escapeHtml(label) + '</option>';
@@ -484,6 +571,20 @@
 
             if (!runSelect.value && state.modelProfiles[0]) {
                 runSelect.value = state.modelProfiles[0].profile_id;
+            }
+        }
+
+        if (editingSelect) {
+            editingSelect.innerHTML = options || '<option value="">请先到“设置”页面添加模型配置</option>';
+
+            if (selected && state.modelProfiles.some(function (profile) {
+                return profile.profile_id === selected;
+            })) {
+                editingSelect.value = selected;
+            }
+
+            if (!editingSelect.value && state.modelProfiles[0]) {
+                editingSelect.value = state.modelProfiles[0].profile_id;
             }
         }
     }
@@ -1570,9 +1671,9 @@
             }
 
             setNotice(notice, '正在使用模板识别详情页…', 'success');
-            api('generic/discover-urls', {
+            api('templates/' + encodeURIComponent(payload.template_id) + '/preview', {
                 method: 'POST',
-                body: JSON.stringify({url: payload.source_url, requirement: '请按所选采集模板识别详情页 URL。', limit: payload.limit})
+                body: JSON.stringify(payload)
             }).then(function (data) {
                 renderPreview(((data.result || {}).items || []).map(function (item) {
                     return {title: item.title || item.url, source_url: item.url, summary: item.reason || '', slug: item.url};
@@ -2407,9 +2508,7 @@
         refreshTemplates().catch(function () {});
     }
 
-    document.addEventListener('DOMContentLoaded', function () {
-        var config = getAppConfig();
-
+    function initCollectionPage(config) {
         initTabs();
         populateSettings(config.settings || {});
         renderRuns(config.runs || []);
@@ -2423,5 +2522,775 @@
                 ensurePolling();
             }
         });
+    }
+
+    function getEditingTargetConfig() {
+        return state.editing.targetConfig || {target_taxonomies: [], extra_taxonomies: [], post_types: []};
+    }
+
+    function findEditingTargetTaxonomy(name) {
+        var taxonomies = getEditingTargetConfig().target_taxonomies || [];
+
+        return taxonomies.find(function (taxonomy) {
+            return taxonomy.name === name;
+        }) || null;
+    }
+
+    function renderEditingPostTypeOptions(postTypes) {
+        var select = $('#aiditor-editing-post-type');
+        if (!select) {
+            return;
+        }
+
+        select.innerHTML = (postTypes || []).map(function (postType) {
+            return '<option value="' + escapeHtml(postType.name) + '">' + escapeHtml(postType.label) + '</option>';
+        }).join('');
+    }
+
+    function renderEditingTargetTaxonomies(targetTaxonomies) {
+        var select = $('#aiditor-editing-target-taxonomy');
+        if (!select) {
+            return;
+        }
+
+        select.innerHTML = (targetTaxonomies || []).map(function (taxonomy) {
+            return '<option value="' + escapeHtml(taxonomy.name) + '">' + escapeHtml(taxonomy.label) + '</option>';
+        }).join('');
+    }
+
+    function renderEditingExtraTaxonomies(extraTaxonomies) {
+        var container = $('#aiditor-editing-extra-taxonomy-fields');
+        if (!container) {
+            return;
+        }
+
+        if (!extraTaxonomies || !extraTaxonomies.length) {
+            container.innerHTML = '<p class="description">当前文章类型没有可选的附加分类法。</p>';
+            return;
+        }
+
+        container.innerHTML = extraTaxonomies.map(function (taxonomy) {
+            var options = (taxonomy.terms || []).map(function (term) {
+                return '<option value="' + escapeHtml(term.term_id) + '">' + escapeHtml(term.name) + '</option>';
+            }).join('');
+
+            return '<div class="aiditor-extra-taxonomy">' +
+                '<label for="aiditor-editing-extra-' + escapeHtml(taxonomy.name) + '">' + escapeHtml(taxonomy.label) + '</label>' +
+                '<select id="aiditor-editing-extra-' + escapeHtml(taxonomy.name) + '" multiple data-editing-extra-taxonomy="' + escapeHtml(taxonomy.name) + '">' +
+                options +
+                '</select>' +
+                '</div>';
+        }).join('');
+    }
+
+    function getSelectedEditingTargetTaxonomy() {
+        var select = $('#aiditor-editing-target-taxonomy');
+        return select ? select.value : '';
+    }
+
+    function renderEditingRootTermLevel(taxonomy) {
+        var container = $('#aiditor-editing-term-levels');
+        if (!container) {
+            return;
+        }
+
+        if (!taxonomy || !taxonomy.root_terms || !taxonomy.root_terms.length) {
+            container.innerHTML = '<p class="description">当前所选分类法下没有可选的顶级目录。</p>';
+            return;
+        }
+
+        container.innerHTML = '';
+        appendEditingTermLevel(container, taxonomy.name, taxonomy.root_terms, 0);
+    }
+
+    function appendEditingTermLevel(container, taxonomyName, terms, levelIndex) {
+        var wrapper = document.createElement('div');
+        wrapper.className = 'aiditor-term-level';
+        wrapper.setAttribute('data-level-index', String(levelIndex));
+
+        var select = document.createElement('select');
+        select.innerHTML = '<option value="">请选择…</option>' + (terms || []).map(function (term) {
+            return '<option value="' + escapeHtml(term.term_id) + '" data-has-children="' + (term.has_children ? '1' : '0') + '">' + escapeHtml(term.name) + '</option>';
+        }).join('');
+
+        select.addEventListener('change', function () {
+            trimEditingTermLevels(levelIndex);
+
+            if (!select.value) {
+                return;
+            }
+
+            var selectedOption = select.options[select.selectedIndex];
+            var hasChildren = selectedOption && selectedOption.getAttribute('data-has-children') === '1';
+
+            if (!hasChildren) {
+                return;
+            }
+
+            api('terms?taxonomy=' + encodeURIComponent(taxonomyName) + '&parent=' + encodeURIComponent(select.value))
+                .then(function (data) {
+                    if (data.terms && data.terms.length) {
+                        appendEditingTermLevel(container, taxonomyName, data.terms, levelIndex + 1);
+                    }
+                });
+        });
+
+        wrapper.appendChild(select);
+        container.appendChild(wrapper);
+    }
+
+    function trimEditingTermLevels(levelIndex) {
+        $all('.aiditor-term-level', $('#aiditor-editing-term-levels')).forEach(function (level) {
+            if (Number(level.getAttribute('data-level-index')) > levelIndex) {
+                level.remove();
+            }
+        });
+    }
+
+    function getSelectedEditingTargetTermId() {
+        var selects = $all('.aiditor-term-level select', $('#aiditor-editing-term-levels'));
+        var selected = 0;
+
+        selects.forEach(function (select) {
+            if (select.value) {
+                selected = Number(select.value);
+            }
+        });
+
+        return selected;
+    }
+
+    function loadEditingTargetConfiguration(postType) {
+        return api('targets?post_type=' + encodeURIComponent(postType)).then(function (data) {
+            state.editing.targetConfig = data.targets || null;
+
+            renderEditingPostTypeOptions((state.editing.targetConfig && state.editing.targetConfig.post_types) || []);
+            if ($('#aiditor-editing-post-type')) {
+                $('#aiditor-editing-post-type').value = data.post_type;
+            }
+
+            renderEditingTargetTaxonomies((state.editing.targetConfig && state.editing.targetConfig.target_taxonomies) || []);
+            renderEditingExtraTaxonomies((state.editing.targetConfig && state.editing.targetConfig.extra_taxonomies) || []);
+
+            var selectedTaxonomy = getSelectedEditingTargetTaxonomy();
+            var taxonomy = findEditingTargetTaxonomy(selectedTaxonomy) || (((state.editing.targetConfig && state.editing.targetConfig.target_taxonomies) || [])[0] || null);
+
+            if (taxonomy && $('#aiditor-editing-target-taxonomy')) {
+                $('#aiditor-editing-target-taxonomy').value = taxonomy.name;
+            }
+
+            renderEditingRootTermLevel(taxonomy);
+            renderEditingFieldMapping();
+        });
+    }
+
+    function getEditingFieldSchemaMap() {
+        var map = {};
+        (state.editing.fieldSchema || []).forEach(function (field) {
+            if (field && field.key) {
+                map[sanitizeFieldKey(field.key)] = field;
+            }
+        });
+        return map;
+    }
+
+    function getEditingFieldLabel(key) {
+        var field = getEditingFieldSchemaMap()[sanitizeFieldKey(key)];
+        return field && field.label ? field.label : key;
+    }
+
+    function getEditingFieldType(key) {
+        var field = getEditingFieldSchemaMap()[sanitizeFieldKey(key)];
+        return field && field.type ? field.type : 'text';
+    }
+
+    function isEditingRewriteCandidate(field) {
+        if (!field || !field.key) {
+            return false;
+        }
+
+        var key = sanitizeFieldKey(field.key);
+        var type = String(field.type || 'text');
+
+        if (['text', 'textarea', 'html'].indexOf(type) === -1) {
+            return false;
+        }
+
+        return ['source_url', 'date'].indexOf(key) === -1;
+    }
+
+    function normalizeEditingDisplayValue(value, type) {
+        if (Array.isArray(value)) {
+            return value.join('，');
+        }
+
+        if (value && typeof value === 'object') {
+            return JSON.stringify(value, null, 2);
+        }
+
+        if (value === null || value === undefined) {
+            return '';
+        }
+
+        return String(value);
+    }
+
+    function renderEditingValue(value, type) {
+        var text = normalizeEditingDisplayValue(value, type);
+        var htmlClass = type === 'html' ? ' aiditor-editing-value is-html' : ' aiditor-editing-value';
+
+        if (type === 'html') {
+            return '<div class="' + htmlClass.trim() + '">' + (text ? sanitizeRichHtml(text) : '<p>—</p>') + '</div>';
+        }
+
+        return '<div class="' + htmlClass.trim() + '">' + escapeHtml(text || '—') + '</div>';
+    }
+
+    function getEditingRewriteStatusMeta(key) {
+        var normalizedKey = sanitizeFieldKey(key);
+
+        if (!state.editing.rewrittenFields) {
+            return {label: '原始值', className: 'is-original'};
+        }
+
+        if (state.editing.rewrittenChangedKeys.indexOf(normalizedKey) !== -1) {
+            return {label: '已改写', className: 'is-changed'};
+        }
+
+        if (state.editing.rewriteRequestedKeys.indexOf(normalizedKey) !== -1) {
+            return {label: '未变化', className: 'is-unchanged'};
+        }
+
+        return {label: '原始值', className: 'is-original'};
+    }
+
+    function ensureEditingDefaultsFromExtract(data) {
+        state.editing.page = data.page || null;
+        state.editing.fieldSchema = data.field_schema || [];
+        state.editing.extractedFields = data.fields || {};
+        state.editing.rewrittenFields = null;
+        state.editing.rewrittenChangedFields = {};
+        state.editing.rewrittenChangedKeys = [];
+        state.editing.rewriteRequestedKeys = [];
+        state.editing.rewriteUnchangedKeys = [];
+        state.editing.rewriteSelection = Array.isArray(data.default_rewrite_fields) ? data.default_rewrite_fields.slice() : [];
+        state.editing.publishSelection = [];
+        state.editing.fieldMapping = buildDefaultEditingMapping(state.editing.fieldSchema, getEditingTargetConfig());
+    }
+
+    function buildDefaultEditingMapping(fieldSchema, targetConfig) {
+        var extraTaxonomies = ((targetConfig && targetConfig.extra_taxonomies) || []).map(function (taxonomy) {
+            return taxonomy.name;
+        });
+        var keywordTarget = extraTaxonomies.indexOf('post_tag') !== -1 ? {type: 'taxonomy', destination: 'post_tag'} : {type: 'meta', destination: 'source_keywords'};
+
+        return (fieldSchema || []).map(function (field) {
+            var key = sanitizeFieldKey(field.key);
+            var mapping = {source: key, destination_type: 'meta', destination: key};
+
+            if (key === 'title') {
+                mapping = {source: key, destination_type: 'core', destination: 'post_title'};
+            } else if (key === 'summary') {
+                mapping = {source: key, destination_type: 'core', destination: 'post_excerpt'};
+            } else if (key === 'content') {
+                mapping = {source: key, destination_type: 'core', destination: 'post_content'};
+            } else if (key === 'keywords') {
+                mapping = {source: key, destination_type: keywordTarget.type, destination: keywordTarget.destination};
+            } else if (key === 'date') {
+                mapping = {source: key, destination_type: 'meta', destination: 'source_date'};
+            } else if (key === 'author') {
+                mapping = {source: key, destination_type: 'meta', destination: 'source_author'};
+            } else if (key === 'source_url') {
+                mapping = {source: key, destination_type: 'meta', destination: 'source_url'};
+            }
+
+            return mapping;
+        });
+    }
+
+    function renderEditingSourceFields() {
+        var container = $('#aiditor-editing-source-fields');
+        var fields = state.editing.extractedFields || {};
+        var schema = state.editing.fieldSchema || [];
+
+        if (!container) {
+            return;
+        }
+
+        if (!schema.length) {
+            container.innerHTML = '<p class="description">采集完成后，这里会显示标题、发布时间、关键词、摘要、正文等字段。</p>';
+            return;
+        }
+
+        container.innerHTML = schema.map(function (field) {
+            var key = sanitizeFieldKey(field.key);
+            var type = field.type || 'text';
+            var checked = state.editing.rewriteSelection.indexOf(key) !== -1;
+            var canRewrite = isEditingRewriteCandidate(field);
+
+            return '<article class="aiditor-editing-field-card">' +
+                '<div class="aiditor-editing-field-card-header">' +
+                    '<div><strong>' + escapeHtml(field.label || key) + '</strong><div class="aiditor-editing-field-card-meta">' + escapeHtml(key) + ' · ' + escapeHtml(type) + '</div></div>' +
+                    '<label class="aiditor-editing-checkbox"><input type="checkbox" data-editing-rewrite-field="' + escapeHtml(key) + '"' + (canRewrite ? '' : ' disabled') + (checked ? ' checked' : '') + '>重写</label>' +
+                '</div>' +
+                renderEditingValue(fields[key], type) +
+            '</article>';
+        }).join('');
+    }
+
+    function renderEditingRewrittenFields() {
+        var container = $('#aiditor-editing-rewritten-fields');
+        var schema = state.editing.fieldSchema || [];
+        var fields = state.editing.rewrittenFields || state.editing.extractedFields || {};
+        var hasRewritten = !!state.editing.rewrittenFields;
+
+        if (!container) {
+            return;
+        }
+
+        if (!schema.length) {
+            container.innerHTML = '<p class="description">完成重写后，这里会显示 AI 输出的字段结果。</p>';
+            return;
+        }
+
+        container.innerHTML = schema.map(function (field) {
+            var key = sanitizeFieldKey(field.key);
+            var type = field.type || 'text';
+            var checked = state.editing.publishSelection.indexOf(key) !== -1;
+            var status = getEditingRewriteStatusMeta(key);
+
+            return '<article class="aiditor-editing-field-card ' + status.className + '">' +
+                '<div class="aiditor-editing-field-card-header">' +
+                    '<div><strong>' + escapeHtml(field.label || key) + '</strong><div class="aiditor-editing-field-card-meta">' + escapeHtml(key) + ' · ' + escapeHtml(type) + ' <span class="aiditor-pill ' + status.className + '">' + escapeHtml(status.label) + '</span></div></div>' +
+                    '<label class="aiditor-editing-checkbox"><input type="checkbox" data-editing-publish-field="' + escapeHtml(key) + '"' + (checked ? ' checked' : '') + '>发布</label>' +
+                '</div>' +
+                renderEditingValue(fields[key], type) +
+            '</article>';
+        }).join('');
+    }
+
+    function getEditingTaxonomyOptions() {
+        var options = [];
+        var targetTaxonomies = getEditingTargetConfig().target_taxonomies || [];
+        var extraTaxonomies = getEditingTargetConfig().extra_taxonomies || [];
+
+        targetTaxonomies.concat(extraTaxonomies).forEach(function (taxonomy) {
+            options.push({value: taxonomy.name, label: taxonomy.label || taxonomy.name});
+        });
+
+        return options;
+    }
+
+    function getEditingMetaOptions() {
+        return getEditingTargetConfig().meta_fields || [];
+    }
+
+    function buildEditingMetaDestinationControl(currentValue) {
+        var options = getEditingMetaOptions();
+        var hasCurrent = options.some(function (item) {
+            return item.key === currentValue;
+        });
+        var selectOptions = options.map(function (item) {
+            var source = item.source ? ' · ' + item.source : '';
+            return '<option value="' + escapeHtml(item.key) + '"' + (currentValue === item.key ? ' selected' : '') + '>' + escapeHtml((item.label || item.key) + '（' + item.key + source + '）') + '</option>';
+        }).join('');
+        var customSelected = currentValue && !hasCurrent;
+
+        return '<div class="aiditor-editing-meta-destination">' +
+            '<select data-editing-mapping-meta-select>' +
+                '<option value="">请选择安全 Meta 字段…</option>' +
+                selectOptions +
+                '<option value="__custom"' + (customSelected ? ' selected' : '') + '>自定义 Meta Key…</option>' +
+            '</select>' +
+            '<input type="text" data-editing-mapping-destination value="' + escapeHtml(currentValue || '') + '" placeholder="Meta Key"' + (customSelected ? '' : ' hidden') + ' />' +
+        '</div>';
+    }
+
+    function buildEditingDestinationOptions(destinationType, currentValue) {
+        if (destinationType === 'core') {
+            return '<option value="post_title"' + (currentValue === 'post_title' ? ' selected' : '') + '>文章标题</option>' +
+                '<option value="post_excerpt"' + (currentValue === 'post_excerpt' ? ' selected' : '') + '>文章摘要</option>' +
+                '<option value="post_content"' + (currentValue === 'post_content' ? ' selected' : '') + '>文章正文</option>';
+        }
+
+        if (destinationType === 'taxonomy') {
+            return getEditingTaxonomyOptions().map(function (item) {
+                return '<option value="' + escapeHtml(item.value) + '"' + (currentValue === item.value ? ' selected' : '') + '>' + escapeHtml(item.label) + '</option>';
+            }).join('');
+        }
+
+        return '';
+    }
+
+    function renderEditingFieldMapping() {
+        var container = $('#aiditor-editing-field-mapping');
+        var schema = state.editing.fieldSchema || [];
+
+        if (!container) {
+            return;
+        }
+
+        if (!schema.length || !state.editing.fieldMapping.length) {
+            container.innerHTML = '<p class="description">采集完成后，这里会自动生成字段映射表。</p>';
+            return;
+        }
+
+        container.innerHTML = state.editing.fieldMapping.map(function (mapping) {
+            var type = mapping.destination_type || 'meta';
+            var destinationInput = type === 'meta'
+                ? buildEditingMetaDestinationControl(mapping.destination || '')
+                : '<select data-editing-mapping-destination>' + buildEditingDestinationOptions(type, mapping.destination || '') + '</select>';
+
+            return '<div class="aiditor-editing-mapping-row" data-editing-mapping-source="' + escapeHtml(mapping.source) + '">' +
+                '<div class="aiditor-editing-mapping-source"><strong>' + escapeHtml(getEditingFieldLabel(mapping.source)) + '</strong><small>' + escapeHtml(mapping.source) + '</small></div>' +
+                '<select data-editing-mapping-type>' +
+                    '<option value="core"' + (type === 'core' ? ' selected' : '') + '>Core</option>' +
+                    '<option value="meta"' + (type === 'meta' ? ' selected' : '') + '>Meta</option>' +
+                    '<option value="taxonomy"' + (type === 'taxonomy' ? ' selected' : '') + '>Taxonomy</option>' +
+                '</select>' +
+                destinationInput +
+            '</div>';
+        }).join('');
+    }
+
+    function syncEditingSelections() {
+        state.editing.rewriteSelection = $all('[data-editing-rewrite-field]').filter(function (input) {
+            return input.checked && !input.disabled;
+        }).map(function (input) {
+            return sanitizeFieldKey(input.getAttribute('data-editing-rewrite-field'));
+        });
+
+        state.editing.publishSelection = $all('[data-editing-publish-field]').filter(function (input) {
+            return input.checked;
+        }).map(function (input) {
+            return sanitizeFieldKey(input.getAttribute('data-editing-publish-field'));
+        });
+    }
+
+    function syncEditingMappingFromDom() {
+        state.editing.fieldMapping = $all('[data-editing-mapping-source]').map(function (row) {
+            var source = sanitizeFieldKey(row.getAttribute('data-editing-mapping-source'));
+            var type = row.querySelector('[data-editing-mapping-type]') ? row.querySelector('[data-editing-mapping-type]').value : 'meta';
+            var destination = '';
+            var metaSelect = row.querySelector('[data-editing-mapping-meta-select]');
+            var destinationInput = row.querySelector('[data-editing-mapping-destination]');
+
+            if (metaSelect && metaSelect.value && metaSelect.value !== '__custom') {
+                destination = metaSelect.value;
+            } else if (destinationInput) {
+                destination = destinationInput.value.trim();
+            }
+
+            return {
+                source: source,
+                destination_type: sanitizeFieldKey(type),
+                destination: sanitizeFieldKey(destination)
+            };
+        });
+    }
+
+    function buildEditingExtractPayload() {
+        return {
+            url: $('#aiditor-editing-url') ? $('#aiditor-editing-url').value.trim() : '',
+            model_profile_id: $('#aiditor-editing-model-profile') ? $('#aiditor-editing-model-profile').value : '',
+            instruction: $('#aiditor-editing-extract-instruction') ? $('#aiditor-editing-extract-instruction').value.trim() : '',
+            field_schema: state.editing.fieldSchema && state.editing.fieldSchema.length ? state.editing.fieldSchema : undefined
+        };
+    }
+
+    function buildEditingRewritePayload() {
+        syncEditingSelections();
+
+        return {
+            model_profile_id: $('#aiditor-editing-model-profile') ? $('#aiditor-editing-model-profile').value : '',
+            fields: state.editing.extractedFields || {},
+            field_schema: state.editing.fieldSchema || [],
+            rewrite_fields: state.editing.rewriteSelection,
+            instruction: $('#aiditor-editing-rewrite-instruction') ? $('#aiditor-editing-rewrite-instruction').value.trim() : ''
+        };
+    }
+
+    function buildEditingPublishPayload() {
+        syncEditingSelections();
+        syncEditingMappingFromDom();
+
+        var extraTaxTerms = {};
+        $all('[data-editing-extra-taxonomy]').forEach(function (select) {
+            var selected = Array.prototype.slice.call(select.selectedOptions || []).map(function (option) {
+                return Number(option.value);
+            }).filter(function (value) {
+                return value > 0;
+            });
+
+            if (selected.length) {
+                extraTaxTerms[select.getAttribute('data-editing-extra-taxonomy')] = selected;
+            }
+        });
+
+        return {
+            source_url: state.editing.extractedFields && state.editing.extractedFields.source_url ? state.editing.extractedFields.source_url : ($('#aiditor-editing-url') ? $('#aiditor-editing-url').value.trim() : ''),
+            page: state.editing.page || {},
+            field_schema: state.editing.fieldSchema || [],
+            extracted_fields: state.editing.extractedFields || {},
+            rewritten_fields: state.editing.rewrittenFields || {},
+            publish_fields: state.editing.publishSelection,
+            field_mapping: state.editing.fieldMapping,
+            post_type: $('#aiditor-editing-post-type') ? $('#aiditor-editing-post-type').value : 'post',
+            post_status: $('#aiditor-editing-post-status') ? $('#aiditor-editing-post-status').value : 'draft',
+            target_taxonomy: getSelectedEditingTargetTaxonomy(),
+            target_term_id: getSelectedEditingTargetTermId(),
+            extra_tax_terms: extraTaxTerms
+        };
+    }
+
+    function validateEditingExtractPayload(payload) {
+        if (!payload.url) {
+            return '请填写详情页 URL。';
+        }
+
+        if (!payload.model_profile_id) {
+            return '请选择 AI 模型。';
+        }
+
+        return '';
+    }
+
+    function validateEditingRewritePayload(payload) {
+        if (!payload.fields || !Object.keys(payload.fields).length) {
+            return '请先完成采集。';
+        }
+
+        if (!payload.model_profile_id) {
+            return '请选择 AI 模型。';
+        }
+
+        if (!payload.rewrite_fields.length) {
+            return '请至少勾选一个要重写的字段。';
+        }
+
+        return '';
+    }
+
+    function validateEditingPublishPayload(payload) {
+        if (!payload.publish_fields.length) {
+            return '请至少勾选一个要发布的字段。';
+        }
+
+        if (!payload.target_taxonomy) {
+            return '请选择主分类法。';
+        }
+
+        if (!payload.target_term_id) {
+            return '请选择主分类目录。';
+        }
+
+        return '';
+    }
+
+    function bindEditingFieldEvents() {
+        var sourceContainer = $('#aiditor-editing-source-fields');
+        var rewrittenContainer = $('#aiditor-editing-rewritten-fields');
+        var mappingContainer = $('#aiditor-editing-field-mapping');
+
+        if (sourceContainer) {
+            sourceContainer.addEventListener('change', function (event) {
+                if (event.target.matches('[data-editing-rewrite-field]')) {
+                    syncEditingSelections();
+                }
+            });
+        }
+
+        if (rewrittenContainer) {
+            rewrittenContainer.addEventListener('change', function (event) {
+                if (event.target.matches('[data-editing-publish-field]')) {
+                    syncEditingSelections();
+                }
+            });
+        }
+
+        if (mappingContainer) {
+            mappingContainer.addEventListener('change', function (event) {
+                var row;
+                if (!event.target.closest('[data-editing-mapping-source]')) {
+                    return;
+                }
+
+                row = event.target.closest('[data-editing-mapping-source]');
+                if (event.target.matches('[data-editing-mapping-type]')) {
+                    syncEditingMappingFromDom();
+                    renderEditingFieldMapping();
+                    return;
+                }
+
+                if (event.target.matches('[data-editing-mapping-meta-select]')) {
+                    if (event.target.value === '__custom') {
+                        row.querySelector('[data-editing-mapping-destination]').hidden = false;
+                    } else {
+                        row.querySelector('[data-editing-mapping-destination]').value = event.target.value;
+                        row.querySelector('[data-editing-mapping-destination]').hidden = true;
+                    }
+                    syncEditingMappingFromDom();
+                    return;
+                }
+
+                if (row) {
+                    syncEditingMappingFromDom();
+                }
+            });
+
+            mappingContainer.addEventListener('input', function (event) {
+                if (event.target.matches('[data-editing-mapping-destination]')) {
+                    syncEditingMappingFromDom();
+                }
+            });
+        }
+    }
+
+    function initEditingPage(config) {
+        var extractButton = $('#aiditor-editing-extract-button');
+        var rewriteButton = $('#aiditor-editing-rewrite-button');
+        var publishButton = $('#aiditor-editing-publish-button');
+        var postTypeSelect = $('#aiditor-editing-post-type');
+        var taxonomySelect = $('#aiditor-editing-target-taxonomy');
+        var notice = $('#aiditor-editing-notice');
+        var publishNotice = $('#aiditor-editing-publish-notice');
+
+        populateSettings(config.settings || {});
+        bindEditingFieldEvents();
+        renderEditingSourceFields();
+        renderEditingRewrittenFields();
+        renderEditingFieldMapping();
+
+        if (postTypeSelect) {
+            postTypeSelect.addEventListener('change', function () {
+                loadEditingTargetConfiguration(postTypeSelect.value).catch(function (error) {
+                    setNotice(publishNotice, error.message, 'error');
+                });
+            });
+        }
+
+        if (taxonomySelect) {
+            taxonomySelect.addEventListener('change', function () {
+                renderEditingRootTermLevel(findEditingTargetTaxonomy(taxonomySelect.value));
+                renderEditingFieldMapping();
+            });
+        }
+
+        if (extractButton) {
+            extractButton.addEventListener('click', function () {
+                var payload = buildEditingExtractPayload();
+                var validationError = validateEditingExtractPayload(payload);
+
+                if (validationError) {
+                    setNotice(notice, validationError, 'error');
+                    return;
+                }
+
+                setNotice(notice, '正在抓取详情页并抽取字段…', 'success');
+                api('editing/extract', {
+                    method: 'POST',
+                    body: JSON.stringify(payload)
+                }).then(function (data) {
+                    ensureEditingDefaultsFromExtract(data);
+                    renderEditingSourceFields();
+                    renderEditingRewrittenFields();
+                    renderEditingFieldMapping();
+                    setNotice(notice, '字段抽取完成。', 'success');
+                    setNotice(publishNotice, '已生成默认字段映射，请确认后发布。', 'success');
+                }).catch(function (error) {
+                    setNotice(notice, error.message, 'error');
+                });
+            });
+        }
+
+        if (rewriteButton) {
+            rewriteButton.addEventListener('click', function () {
+                var payload = buildEditingRewritePayload();
+                var validationError = validateEditingRewritePayload(payload);
+
+                if (validationError) {
+                    setNotice(notice, validationError, 'error');
+                    return;
+                }
+
+                setNotice(notice, 'AI 正在重写所选字段…', 'success');
+                api('editing/rewrite', {
+                    method: 'POST',
+                    body: JSON.stringify(payload)
+                }).then(function (data) {
+                    state.editing.rewrittenFields = data.rewritten_fields || {};
+                    state.editing.rewrittenChangedFields = data.changed_fields || {};
+                    state.editing.rewrittenChangedKeys = Array.isArray(data.rewritten_keys) ? data.rewritten_keys.slice() : [];
+                    state.editing.rewriteRequestedKeys = Array.isArray(data.requested_keys) ? data.requested_keys.slice() : [];
+                    state.editing.rewriteUnchangedKeys = Array.isArray(data.unchanged_keys) ? data.unchanged_keys.slice() : [];
+                    state.editing.publishSelection = state.editing.rewrittenChangedKeys.slice();
+                    renderEditingRewrittenFields();
+
+                    if (!state.editing.rewrittenChangedKeys.length) {
+                        setNotice(notice, 'AI 已返回结果，但与原文相比没有实质变化，可调整提示词后重试。', 'success');
+                        return;
+                    }
+
+                    setNotice(notice, '字段重写完成。', 'success');
+                }).catch(function (error) {
+                    setNotice(notice, error.message, 'error');
+                });
+            });
+        }
+
+        if (publishButton) {
+            publishButton.addEventListener('click', function () {
+                var payload = buildEditingPublishPayload();
+                var validationError = validateEditingPublishPayload(payload);
+
+                if (validationError) {
+                    setNotice(publishNotice, validationError, 'error');
+                    return;
+                }
+
+                setNotice(publishNotice, '正在发布文章…', 'success');
+                api('editing/publish', {
+                    method: 'POST',
+                    body: JSON.stringify(payload)
+                }).then(function (data) {
+                    var message = data.message || '文章已创建。';
+                    if (data.edit_link) {
+                        message += ' <a href="' + escapeHtml(data.edit_link) + '">编辑文章</a>';
+                    }
+                    publishNotice.className = 'aiditor-notice is-success';
+                    publishNotice.innerHTML = sanitizeRichHtml(message);
+                }).catch(function (error) {
+                    setNotice(publishNotice, error.message, 'error');
+                });
+            });
+        }
+
+        loadEditingTargetConfiguration('post').catch(function (error) {
+            setNotice(publishNotice, error.message, 'error');
+        });
+    }
+
+    function initSettingsPage(config) {
+        populateSettings(config.settings || {});
+        initSettings();
+    }
+
+    document.addEventListener('DOMContentLoaded', function () {
+        var config = getAppConfig();
+        var currentPage = config.currentPage || 'collection';
+
+        if (currentPage === 'collection') {
+            initCollectionPage(config);
+            return;
+        }
+
+        if (currentPage === 'editing') {
+            initEditingPage(config);
+            return;
+        }
+
+        if (currentPage === 'settings') {
+            initSettingsPage(config);
+        }
     });
 }());

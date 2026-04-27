@@ -48,6 +48,24 @@ class AIditor_AI_Rewriter
         $this->style_repository = $style_repository;
     }
 
+    public function complete_chat(array $payload, array $settings): array
+    {
+        return $this->post_json(
+            $this->build_endpoint((string) ($settings['base_url'] ?? '')),
+            $payload,
+            array(
+                'Authorization' => 'Bearer ' . trim((string) ($settings['api_key'] ?? '')),
+                'Content-Type'  => 'application/json',
+            ),
+            (int) ($settings['request_timeout'] ?? 60)
+        );
+    }
+
+    public function extract_completion_content(array $response): string
+    {
+        return $this->extract_message_content($response);
+    }
+
     public function rewrite(array $normalized_payload, array $research_packet = array()): array
     {
         $settings = $this->settings->get();
@@ -117,7 +135,13 @@ class AIditor_AI_Rewriter
         $targets = $this->normalize_rewrite_field_targets($fields, $field_schema, $rewrite_fields);
 
         if (empty($targets)) {
-            return $fields;
+            return array(
+                'merged_fields'   => $fields,
+                'changed_fields'  => array(),
+                'changed_keys'    => array(),
+                'requested_keys'  => array(),
+                'unchanged_keys'  => array(),
+            );
         }
 
         $settings = empty($runtime_settings)
@@ -171,7 +195,7 @@ class AIditor_AI_Rewriter
             throw new RuntimeException('AI 字段重写失败，未获得可用响应。');
         }
 
-        return $this->merge_rewritten_fields($fields, $rewritten, $targets);
+        return $this->build_rewrite_result($fields, $rewritten, $targets, $field_schema);
     }
 
     protected function build_completion_payload(array $normalized_payload, array $settings): array
@@ -244,6 +268,8 @@ class AIditor_AI_Rewriter
                 '标题字段如果被指定，只做必要润色，保持专有名词、产品名和事实主体，不要标题党。',
                 '摘要字段应写成自然、克制的信息摘要，不要机械翻译腔、营销腔或“本文介绍了”式模板句。',
                 '正文字段应输出适合 Gutenberg 入库的 HTML 片段，可以包含 <p>、<h2>、<ol>、<ul>、<li>、<strong>、<em>，不要输出 H1。',
+                '如果用户要求重写，就必须对被选中的可改写字段做实质性改写，而不只是拆段、换行、替换个别虚词、调整标点或简单同义词替换。',
+                '禁止把原文基本原样照搬；如果某字段确实没有更好的改写空间，也必须主动压缩、重组句式或调整表达，使读感明显不同但事实不变。',
                 '不要输出来源网址、跳转提示、“详情可查看”、免责声明、AI 生成痕迹或 Markdown 代码块。',
                 '返回严格 JSON 对象，key 必须与被重写字段 key 一致。',
                 '写作风格遵循：' . $style,
@@ -271,6 +297,8 @@ class AIditor_AI_Rewriter
                 '全部抽取字段上下文：' . (string) $json_encode($fields, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
                 '需要重写的字段：' . (string) $json_encode($target_fields, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
                 '字段输出要求：text 字段返回纯文本；textarea 字段返回纯文本自然段；html 字段返回可直接写入 WordPress 正文的 HTML 片段。',
+                '重写强约束：输出必须与原字段在表达上明显不同，不能只是按原文重新分段、轻微改标点、替换少量近义词或保持原句顺序照搬。',
+                '正文 content 如被重写，优先重新组织段落、合并重复信息、压缩赘述、重写句式；摘要 summary 如被重写，优先改成更凝练的概述，而不是复制正文开头。',
                 '只返回需要重写字段的 JSON，例如 {"summary":"...","content":"<p>...</p>"}。不要返回 notes、confidence 或解释文字。',
             )
         );
@@ -647,6 +675,105 @@ class AIditor_AI_Rewriter
         return $fields;
     }
 
+    protected function build_rewrite_result(array $fields, array $rewritten, array $targets, array $field_schema): array
+    {
+        $schema_map = $this->map_field_schema($field_schema);
+        $merged_fields = $this->merge_rewritten_fields($fields, $rewritten, $targets);
+        $changed_fields = array();
+        $changed_keys = array();
+        $requested_keys = array_values(array_unique($targets));
+        $unchanged_keys = array();
+
+        foreach ($requested_keys as $key) {
+            $field = $schema_map[$key] ?? array('key' => $key, 'type' => 'text');
+            $original = $fields[$key] ?? null;
+            $merged = $merged_fields[$key] ?? null;
+
+            if (! $this->field_values_are_meaningfully_different($original, $merged, (string) ($field['type'] ?? 'text'))) {
+                $unchanged_keys[] = $key;
+                continue;
+            }
+
+            $changed_keys[] = $key;
+            $changed_fields[$key] = $merged;
+        }
+
+        return array(
+            'merged_fields'   => $merged_fields,
+            'changed_fields'  => $changed_fields,
+            'changed_keys'    => array_values($changed_keys),
+            'requested_keys'  => $requested_keys,
+            'unchanged_keys'  => array_values($unchanged_keys),
+        );
+    }
+
+    protected function field_values_are_meaningfully_different($original, $rewritten, string $type): bool
+    {
+        $normalized_original = $this->normalize_field_value_for_comparison($original, $type);
+        $normalized_rewritten = $this->normalize_field_value_for_comparison($rewritten, $type);
+
+        if ($normalized_original === $normalized_rewritten) {
+            return false;
+        }
+
+        if ('' === $normalized_rewritten) {
+            return false;
+        }
+
+        if (in_array($type, array('textarea', 'html'), true)) {
+            return $this->text_similarity_ratio($normalized_original, $normalized_rewritten) < 0.96;
+        }
+
+        return true;
+    }
+
+    protected function normalize_field_value_for_comparison($value, string $type): string
+    {
+        if (null === $value) {
+            return '';
+        }
+
+        if (is_array($value)) {
+            $value = function_exists('wp_json_encode')
+                ? wp_json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+                : json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        } elseif (is_object($value)) {
+            $value = function_exists('wp_json_encode')
+                ? wp_json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+                : json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        }
+
+        $text = str_replace(array("\r\n", "\r"), "\n", trim((string) $value));
+
+        if ('html' === $type) {
+            if (function_exists('wp_strip_all_tags')) {
+                $text = wp_strip_all_tags($text, true);
+            } else {
+                $text = strip_tags($text);
+            }
+        }
+
+        $text = preg_replace('/[ \t]+/u', ' ', $text);
+        $text = preg_replace('/\n{2,}/u', "\n", (string) $text);
+
+        return trim((string) $text);
+    }
+
+    protected function text_similarity_ratio(string $left, string $right): float
+    {
+        if ($left === $right) {
+            return 1.0;
+        }
+
+        if ('' === $left || '' === $right) {
+            return 0.0;
+        }
+
+        similar_text($left, $right, $percent);
+
+        return max(0.0, min(1.0, ((float) $percent) / 100));
+    }
+
     public function is_retryable_exception(Throwable $exception): bool
     {
         if ($exception instanceof AIditor_AI_Request_Exception) {
@@ -763,10 +890,10 @@ class AIditor_AI_Rewriter
     protected function should_verify_ssl(): bool
     {
         if (function_exists('apply_filters')) {
-            return (bool) apply_filters('aiditor_sslverify', false);
+            return (bool) apply_filters('aiditor_sslverify', true);
         }
 
-        return false;
+        return true;
     }
 
     protected function headers_to_array(array $headers): array
