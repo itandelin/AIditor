@@ -880,7 +880,11 @@ class AIditor_REST_Controller
             $field_schema     = is_array($payload['field_schema'] ?? null) ? $payload['field_schema'] : $this->get_default_editing_field_schema();
             $rewrite_fields   = $this->sanitize_string_array($payload['rewrite_fields'] ?? array());
             $instruction      = trim((string) ($payload['instruction'] ?? ''));
+            $style_id         = sanitize_key((string) ($payload['style_id'] ?? ''));
             $runtime_settings = $this->resolve_request_model_settings($payload);
+            if ('' !== $style_id) {
+                $runtime_settings['default_article_style'] = $style_id;
+            }
 
             if (empty($rewrite_fields)) {
                 return new WP_Error('aiditor_editing_rewrite_fields_required', '请至少选择一个要重写的字段。', array('status' => 400));

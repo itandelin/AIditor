@@ -859,6 +859,7 @@
 
         state.articleStyles = styles || [];
         renderArticleStyleOptions(state.articleStyles, (getCurrentSettings() || {}).default_article_style || 'editorial-guide');
+        renderArticleStyleOptions(state.articleStyles, (getCurrentSettings() || {}).default_article_style || 'editorial-guide', '#aiditor-editing-style-preset');
         renderArticleStyleOptions(state.articleStyles, '', '#aiditor-creation-style-preset');
 
         if (!list) {
@@ -1828,30 +1829,11 @@
     function initSettings() {
         var form = $('#aiditor-settings-form');
         var notice = $('#aiditor-settings-notice');
+        var styleNotice = $('#aiditor-style-notice') || notice;
 
-        $all('[data-settings-tab]').forEach(function (button) {
-            button.addEventListener('click', function () {
-                var tab = button.getAttribute('data-settings-tab');
-
-                $all('[data-settings-tab]').forEach(function (item) {
-                    item.classList.toggle('is-active', item === button);
-                });
-
-                $all('[data-settings-panel]').forEach(function (panel) {
-                    var active = panel.getAttribute('data-settings-panel') === tab;
-                    panel.hidden = !active;
-                    panel.classList.toggle('is-active', active);
-                });
-
-                var saveRow = $('.aiditor-settings-save-row');
-                if (saveRow) {
-                    saveRow.classList.toggle('is-hidden', tab === 'styles');
-                }
-            });
-        });
-
+        initTabs();
         refreshArticleStyles().catch(function () {});
-        initArticleStyleManager(notice);
+        initArticleStyleManager(styleNotice);
         initModelProfileManager(notice);
 
         if (!form) {
@@ -1909,7 +1891,7 @@
                     body: JSON.stringify(payload)
                 }).then(function (data) {
                     renderArticleStyles(data.styles || []);
-                    setNotice(notice, '文章风格已保存，可在队列设置中选择。', 'success');
+                    setNotice(notice, '文章风格已保存，可在 AI采集、AI采编 和 AI创作 中选择。', 'success');
                 }).catch(function (error) {
                     setNotice(notice, error.message, 'error');
                 });
@@ -3583,6 +3565,7 @@
 
         return {
             model_profile_id: $('#aiditor-editing-model-profile') ? $('#aiditor-editing-model-profile').value : '',
+            style_id: $('#aiditor-editing-style-preset') ? $('#aiditor-editing-style-preset').value : '',
             fields: state.editing.extractedFields || {},
             field_schema: state.editing.fieldSchema || [],
             rewrite_fields: state.editing.rewriteSelection,
@@ -3739,6 +3722,7 @@
         initTabs();
         bindEditingFieldEvents();
         initCreationPage();
+        refreshArticleStyles().catch(function () {});
         renderEditingSourceFields();
         renderEditingRewrittenFields();
         renderEditingFieldMapping();

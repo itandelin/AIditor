@@ -349,11 +349,10 @@ class AIditor_Admin_Page
                     <div class="aiditor-section-header aiditor-settings-header">
                         <div>
                             <h2><?php echo esc_html__('插件设置', 'aiditor'); ?></h2>
-                            <p class="description"><?php echo esc_html__('队列设置与文章风格仍保留在 AI采集 页面中；AI 模型连接配置已迁移到左侧“设置”子菜单。', 'aiditor'); ?></p>
+                            <p class="description"><?php echo esc_html__('队列设置保留在 AI采集 页面中；AI 模型连接配置和文章风格已迁移到左侧“设置”子菜单。', 'aiditor'); ?></p>
                         </div>
                         <div class="aiditor-subtabs" aria-label="<?php echo esc_attr__('设置分类', 'aiditor'); ?>">
                             <button type="button" class="button button-small is-active" data-settings-tab="queue"><?php echo esc_html__('队列设置', 'aiditor'); ?></button>
-                            <button type="button" class="button button-small" data-settings-tab="styles"><?php echo esc_html__('文章风格', 'aiditor'); ?></button>
                         </div>
                     </div>
 
@@ -384,38 +383,7 @@ class AIditor_Admin_Page
                             <button type="submit" class="button button-primary"><?php echo esc_html__('保存设置', 'aiditor'); ?></button>
                         </div>
                     </form>
-                    <div id="aiditor-settings-notice" class="aiditor-notice" aria-live="polite"></div>
-
-                    <div class="aiditor-settings-pane" data-settings-panel="styles" hidden>
-                        <div class="aiditor-style-editor">
-                            <div class="aiditor-setting-block aiditor-style-form">
-                                <h3><?php echo esc_html__('创建文章风格', 'aiditor'); ?></h3>
-                                <p class="description"><?php echo esc_html__('先填写风格名称和需求，可调用 AI 生成提示词，再保存为队列可选风格。', 'aiditor'); ?></p>
-                                <div class="aiditor-field">
-                                    <label for="aiditor-style-name"><?php echo esc_html__('风格名称', 'aiditor'); ?></label>
-                                    <input id="aiditor-style-name" type="text" placeholder="<?php echo esc_attr__('例如：深度评测风格', 'aiditor'); ?>" />
-                                </div>
-                                <div class="aiditor-field">
-                                    <label for="aiditor-style-description"><?php echo esc_html__('风格需求', 'aiditor'); ?></label>
-                                    <textarea id="aiditor-style-description" rows="4" placeholder="<?php echo esc_attr__('例如：像资深产品评测编辑一样写，先讲清楚背景，再讲优缺点，避免营销腔。', 'aiditor'); ?>"></textarea>
-                                </div>
-                                <div class="aiditor-field">
-                                    <label for="aiditor-style-prompt"><?php echo esc_html__('AI 重写风格提示词', 'aiditor'); ?></label>
-                                    <textarea id="aiditor-style-prompt" rows="7"></textarea>
-                                </div>
-                                <div class="aiditor-actions"><button type="button" class="button" id="aiditor-generate-style"><?php echo esc_html__('调用 AI 生成风格', 'aiditor'); ?></button><button type="button" class="button button-primary" id="aiditor-save-style"><?php echo esc_html__('保存文章风格', 'aiditor'); ?></button></div>
-                            </div>
-                            <div class="aiditor-setting-block aiditor-style-library">
-                                <div class="aiditor-card-heading-row">
-                                    <div>
-                                        <h3><?php echo esc_html__('已有文章风格', 'aiditor'); ?></h3>
-                                        <p class="description"><?php echo esc_html__('这些风格会出现在“队列设置”的文章风格下拉框中。', 'aiditor'); ?></p>
-                                    </div>
-                                </div>
-                                <div id="aiditor-style-list" class="aiditor-style-list"></div>
-                            </div>
-                        </div>
-                    </div>
+                    <div id="aiditor-collection-settings-notice" class="aiditor-notice" aria-live="polite"></div>
                 </div>
             </section>
 
@@ -517,6 +485,12 @@ class AIditor_Admin_Page
                                 <div class="aiditor-field">
                                     <label for="aiditor-editing-model-profile"><?php echo esc_html__('AI 模型', 'aiditor'); ?></label>
                                     <select id="aiditor-editing-model-profile"></select>
+                                </div>
+                                <div class="aiditor-field">
+                                    <label for="aiditor-editing-style-preset"><?php echo esc_html__('文章风格', 'aiditor'); ?></label>
+                                    <select id="aiditor-editing-style-preset">
+                                        <option value=""><?php echo esc_html__('默认风格', 'aiditor'); ?></option>
+                                    </select>
                                 </div>
                             </div>
 
@@ -756,17 +730,23 @@ class AIditor_Admin_Page
     {
         ?>
         <div class="wrap aiditor-admin">
-            <?php $this->render_page_header(__('AIditor · 设置', 'aiditor'), __('集中管理 AI 模型连接配置；队列设置与文章风格仍保留在“AI采集”页面中。', 'aiditor')); ?>
+            <?php $this->render_page_header(__('AIditor · 设置', 'aiditor'), __('集中管理 AI 模型连接配置与公共文章风格，供 AI采集、AI采编 和 AI创作共用。', 'aiditor')); ?>
 
-            <div class="aiditor-card aiditor-settings-shell">
-                <div class="aiditor-section-header aiditor-settings-header">
-                    <div>
-                        <h2><?php echo esc_html__('AI 设置', 'aiditor'); ?></h2>
-                        <p class="description"><?php echo esc_html__('插件不会预置任何模型、接口地址或密钥；请在这里自行新增并保存多个 OpenAI 兼容模型。', 'aiditor'); ?></p>
+            <nav class="nav-tab-wrapper aiditor-tabs" aria-label="<?php echo esc_attr__('设置标签页', 'aiditor'); ?>">
+                <button type="button" class="nav-tab nav-tab-active" data-tab-target="ai-settings"><?php echo esc_html__('AI 设置', 'aiditor'); ?></button>
+                <button type="button" class="nav-tab" data-tab-target="article-styles"><?php echo esc_html__('文章风格', 'aiditor'); ?></button>
+            </nav>
+
+            <section class="aiditor-panel is-active" data-tab-panel="ai-settings">
+                <div class="aiditor-card aiditor-settings-shell">
+                    <div class="aiditor-section-header aiditor-settings-header">
+                        <div>
+                            <h2><?php echo esc_html__('AI 设置', 'aiditor'); ?></h2>
+                            <p class="description"><?php echo esc_html__('插件不会预置任何模型、接口地址或密钥；请在这里自行新增并保存多个 OpenAI 兼容模型。', 'aiditor'); ?></p>
+                        </div>
                     </div>
-                </div>
 
-                <form id="aiditor-settings-form" class="aiditor-settings-form">
+                    <form id="aiditor-settings-form" class="aiditor-settings-form">
                     <input id="aiditor-model-profiles-json" name="model_profiles" type="hidden" />
                     <div class="aiditor-model-workbench">
                         <div class="aiditor-setting-block aiditor-model-form">
@@ -804,9 +784,53 @@ class AIditor_Admin_Page
                         </div>
                     </div>
 
-                </form>
-                <div id="aiditor-settings-notice" class="aiditor-notice" aria-live="polite"></div>
-            </div>
+                    </form>
+                    <div id="aiditor-settings-notice" class="aiditor-notice" aria-live="polite"></div>
+                </div>
+            </section>
+
+            <section class="aiditor-panel" data-tab-panel="article-styles" hidden>
+                <div class="aiditor-card aiditor-settings-shell">
+                    <div class="aiditor-section-header aiditor-settings-header">
+                        <div>
+                            <h2><?php echo esc_html__('文章风格', 'aiditor'); ?></h2>
+                            <p class="description"><?php echo esc_html__('在这里维护插件公共文章风格，可用于 AI采集 队列、AI采编重写和 AI创作生成。', 'aiditor'); ?></p>
+                        </div>
+                    </div>
+
+                    <div class="aiditor-settings-pane is-active" data-settings-panel="styles">
+                        <div class="aiditor-style-editor">
+                            <div class="aiditor-setting-block aiditor-style-form">
+                                <h3><?php echo esc_html__('创建文章风格', 'aiditor'); ?></h3>
+                                <p class="description"><?php echo esc_html__('先填写风格名称和需求，可调用 AI 生成提示词，再保存为全局可选风格。', 'aiditor'); ?></p>
+                                <div class="aiditor-field">
+                                    <label for="aiditor-style-name"><?php echo esc_html__('风格名称', 'aiditor'); ?></label>
+                                    <input id="aiditor-style-name" type="text" placeholder="<?php echo esc_attr__('例如：深度评测风格', 'aiditor'); ?>" />
+                                </div>
+                                <div class="aiditor-field">
+                                    <label for="aiditor-style-description"><?php echo esc_html__('风格需求', 'aiditor'); ?></label>
+                                    <textarea id="aiditor-style-description" rows="4" placeholder="<?php echo esc_attr__('例如：像资深产品评测编辑一样写，先讲清楚背景，再讲优缺点，避免营销腔。', 'aiditor'); ?>"></textarea>
+                                </div>
+                                <div class="aiditor-field">
+                                    <label for="aiditor-style-prompt"><?php echo esc_html__('AI 重写/创作风格提示词', 'aiditor'); ?></label>
+                                    <textarea id="aiditor-style-prompt" rows="7"></textarea>
+                                </div>
+                                <div class="aiditor-actions"><button type="button" class="button" id="aiditor-generate-style"><?php echo esc_html__('调用 AI 生成风格', 'aiditor'); ?></button><button type="button" class="button button-primary" id="aiditor-save-style"><?php echo esc_html__('保存文章风格', 'aiditor'); ?></button></div>
+                            </div>
+                            <div class="aiditor-setting-block aiditor-style-library">
+                                <div class="aiditor-card-heading-row">
+                                    <div>
+                                        <h3><?php echo esc_html__('已有文章风格', 'aiditor'); ?></h3>
+                                        <p class="description"><?php echo esc_html__('这些风格会出现在 AI采集、AI采编 和 AI创作 的文章风格下拉框中。', 'aiditor'); ?></p>
+                                    </div>
+                                </div>
+                                <div id="aiditor-style-list" class="aiditor-style-list"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="aiditor-style-notice" class="aiditor-notice" aria-live="polite"></div>
+                </div>
+            </section>
         </div>
         <?php
     }
