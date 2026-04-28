@@ -91,6 +91,18 @@ class AIditor_REST_Controller
 
         register_rest_route(
             'aiditor/v1',
+            '/settings/model-test',
+            array(
+                array(
+                    'methods'             => WP_REST_Server::CREATABLE,
+                    'callback'            => array($this, 'test_model_settings'),
+                    'permission_callback' => array($this, 'can_manage'),
+                ),
+            )
+        );
+
+        register_rest_route(
+            'aiditor/v1',
             '/article-styles',
             array(
                 array(
@@ -538,6 +550,61 @@ class AIditor_REST_Controller
                 'settings' => $this->settings->get_public_settings(),
             )
         );
+    }
+
+    public function test_model_settings(WP_REST_Request $request)
+    {
+        $payload = $this->get_request_payload($request);
+        $profile_id = isset($payload['profile_id']) ? sanitize_key((string) $payload['profile_id']) : '';
+        $saved_settings = '' !== $profile_id ? $this->settings->resolve_model_settings($profile_id) : array();
+        $settings = array(
+            'base_url'        => isset($payload['base_url']) ? trim((string) $payload['base_url']) : '',
+            'api_key'         => isset($payload['api_key']) ? trim((string) $payload['api_key']) : '',
+            'model'           => isset($payload['model']) ? trim((string) $payload['model']) : '',
+            'temperature'     => isset($payload['temperature']) ? (float) $payload['temperature'] : 0.2,
+            'max_tokens'      => min(128, max(16, isset($payload['max_tokens']) ? (int) $payload['max_tokens'] : 128)),
+            'request_timeout' => max(5, min(60, isset($payload['request_timeout']) ? (int) $payload['request_timeout'] : 30)),
+        );
+
+        if ('' === $settings['api_key'] && is_array($saved_settings)) {
+            $settings['api_key'] = trim((string) ($saved_settings['api_key'] ?? ''));
+        }
+
+        if ('' === $settings['base_url'] || '' === $settings['api_key'] || '' === $settings['model']) {
+            return new WP_Error('aiditor_model_test_incomplete', '请先填写接口地址、API 密钥和模型名称。', array('status' => 400));
+        }
+
+        try {
+            $response = $this->rewriter->complete_chat(
+                array(
+                    'model'       => $settings['model'],
+                    'messages'    => array(
+                        array(
+                            'role'    => 'user',
+                            'content' => 'Hi!',
+                        ),
+                    ),
+                    'temperature' => 0,
+                    'max_tokens'  => $settings['max_tokens'],
+                ),
+                $settings
+            );
+
+            $content = trim($this->rewriter->extract_completion_content($response));
+
+            if ('' === $content) {
+                return new WP_Error('aiditor_model_test_empty', '模型测试失败：服务未返回可用内容。', array('status' => 400));
+            }
+
+            return rest_ensure_response(
+                array(
+                    'message' => '模型测试成功。',
+                    'content' => $content,
+                )
+            );
+        } catch (Throwable $exception) {
+            return new WP_Error('aiditor_model_test_failed', '模型测试失败：' . $exception->getMessage(), array('status' => 400));
+        }
     }
 
     public function list_article_styles(): WP_REST_Response

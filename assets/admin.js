@@ -517,8 +517,8 @@
             api_key_masked: profile && profile.api_key_masked ? String(profile.api_key_masked) : '',
             api_key_configured: !!(profile && profile.api_key_configured),
             model: profile && profile.model ? String(profile.model) : '',
-            temperature: clampNumber(profile && profile.temperature, 0, 2, 0.2),
-            max_tokens: clampNumber(profile && profile.max_tokens, 256, 16384, 3200),
+            temperature: clampNumber(profile && profile.temperature, 0, 2, 0.5),
+            max_tokens: clampNumber(profile && profile.max_tokens, 256, 16384, 8192),
             request_timeout: clampNumber(profile && profile.request_timeout, 5, 300, 60)
         };
     }
@@ -670,8 +670,8 @@
             '#aiditor-model-profile-base-url': '',
             '#aiditor-model-profile-api-key': '',
             '#aiditor-model-profile-model': '',
-            '#aiditor-model-profile-temperature': '0.2',
-            '#aiditor-model-profile-max-tokens': '3200',
+            '#aiditor-model-profile-temperature': '0.5',
+            '#aiditor-model-profile-max-tokens': '8192',
             '#aiditor-model-profile-timeout': '60'
         };
 
@@ -724,12 +724,17 @@
         }
     }
 
-    function readModelProfileEditor() {
+    function readModelProfileEditor(options) {
+        var allowExistingApiKey = options && options.allowExistingApiKey;
+        var requireApiKey = options && options.requireApiKey;
         var profileId = $('#aiditor-model-profile-id') ? $('#aiditor-model-profile-id').value : '';
         var name = $('#aiditor-model-profile-name') ? $('#aiditor-model-profile-name').value.trim() : '';
         var baseUrl = $('#aiditor-model-profile-base-url') ? $('#aiditor-model-profile-base-url').value.trim() : '';
         var apiKey = $('#aiditor-model-profile-api-key') ? $('#aiditor-model-profile-api-key').value.trim() : '';
         var model = $('#aiditor-model-profile-model') ? $('#aiditor-model-profile-model').value.trim() : '';
+        var existingProfile = profileId ? state.modelProfiles.find(function (item) {
+            return item.profile_id === profileId;
+        }) : null;
 
         if (!name) {
             throw new Error('请填写模型配置名称。');
@@ -743,15 +748,21 @@
             throw new Error('请填写模型名称。');
         }
 
+        if (requireApiKey && !apiKey && !(allowExistingApiKey && existingProfile && existingProfile.api_key_configured)) {
+            throw new Error('请填写 API 密钥后再测试模型。');
+        }
+
         return normalizeModelProfile({
             profile_id: profileId || generateModelProfileId(),
             name: name,
             base_url: baseUrl,
             api_key: apiKey,
             model: model,
-            temperature: $('#aiditor-model-profile-temperature') ? $('#aiditor-model-profile-temperature').value : 0.2,
-            max_tokens: $('#aiditor-model-profile-max-tokens') ? $('#aiditor-model-profile-max-tokens').value : 3200,
-            request_timeout: $('#aiditor-model-profile-timeout') ? $('#aiditor-model-profile-timeout').value : 60
+            temperature: $('#aiditor-model-profile-temperature') ? $('#aiditor-model-profile-temperature').value : 0.5,
+            max_tokens: $('#aiditor-model-profile-max-tokens') ? $('#aiditor-model-profile-max-tokens').value : 8192,
+            request_timeout: $('#aiditor-model-profile-timeout') ? $('#aiditor-model-profile-timeout').value : 60,
+            api_key_configured: existingProfile ? existingProfile.api_key_configured : false,
+            api_key_masked: existingProfile ? existingProfile.api_key_masked : ''
         });
     }
 
@@ -844,6 +855,41 @@
         }).catch(function (error) {
             setNotice(notice, error.message, 'error');
             throw error;
+        });
+    }
+
+    function testModelProfile(profile, notice, button) {
+        var originalText = button ? button.textContent : '';
+
+        if (button) {
+            button.disabled = true;
+            button.textContent = '测试中…';
+        }
+
+        setNotice(notice, '正在测试模型…', 'success');
+
+        return api('settings/model-test', {
+            method: 'POST',
+            body: JSON.stringify({
+                profile_id: profile.profile_id,
+                base_url: profile.base_url,
+                api_key: profile.api_key,
+                model: profile.model,
+                temperature: profile.temperature,
+                max_tokens: 128,
+                request_timeout: profile.request_timeout
+            })
+        }).then(function (data) {
+            setNotice(notice, data.message + (data.content ? ' 返回：' + data.content : ''), 'success');
+            return data;
+        }).catch(function (error) {
+            setNotice(notice, error.message, 'error');
+            throw error;
+        }).finally(function () {
+            if (button) {
+                button.disabled = false;
+                button.textContent = originalText || '测试';
+            }
         });
     }
 
@@ -1973,6 +2019,7 @@
 
     function initModelProfileManager(notice) {
         var saveButton = $('#aiditor-save-model-profile');
+        var testButton = $('#aiditor-test-model-profile');
         var clearButton = $('#aiditor-clear-model-profile');
         var list = $('#aiditor-model-profile-list');
         var defaultSelect = $('#aiditor-default-model-profile');
@@ -1986,7 +2033,7 @@
                 var previousDefaultId = defaultSelect ? defaultSelect.value : '';
 
                 try {
-                    profile = readModelProfileEditor();
+                    profile = readModelProfileEditor({allowExistingApiKey: true});
                 } catch (error) {
                     setNotice(notice, error.message, 'error');
                     return;
@@ -2016,6 +2063,21 @@
                     state.modelProfiles = previousProfiles;
                     renderModelProfiles(previousDefaultId);
                 });
+            });
+        }
+
+        if (testButton) {
+            testButton.addEventListener('click', function () {
+                var profile;
+
+                try {
+                    profile = readModelProfileEditor({allowExistingApiKey: true, requireApiKey: true});
+                } catch (error) {
+                    setNotice(notice, error.message, 'error');
+                    return;
+                }
+
+                testModelProfile(profile, notice, testButton).catch(function () {});
             });
         }
 

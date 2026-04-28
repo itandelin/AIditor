@@ -766,6 +766,7 @@ class AIditor_Admin_Page
                             </div>
                             <div class="aiditor-actions">
                                 <button type="button" class="button button-primary" id="aiditor-save-model-profile"><?php echo esc_html__('保存模型配置', 'aiditor'); ?></button>
+                                <button type="button" class="button" id="aiditor-test-model-profile"><?php echo esc_html__('测试', 'aiditor'); ?></button>
                                 <button type="button" class="button" id="aiditor-clear-model-profile"><?php echo esc_html__('清空表单', 'aiditor'); ?></button>
                             </div>
                         </div>
