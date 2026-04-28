@@ -787,16 +787,25 @@
     function buildSettingsPayload(form) {
         var payload = {};
         var formData;
+        var modelProfilesInput;
 
         if (!form) {
             throw new Error('未找到设置表单。');
         }
 
-        syncModelProfilesInput();
+        if ($('#aiditor-model-profiles-json')) {
+            syncModelProfilesInput();
+        }
+
         formData = new FormData(form);
         formData.forEach(function (value, key) {
             payload[key] = value;
         });
+
+        modelProfilesInput = $('#aiditor-model-profiles-json');
+        if (!payload.model_profiles && modelProfilesInput) {
+            payload.model_profiles = modelProfilesInput.value;
+        }
 
         return payload;
     }
@@ -1846,6 +1855,21 @@
         });
     }
 
+    function clearArticleStyleEditor() {
+        if ($('#aiditor-style-id')) {
+            $('#aiditor-style-id').value = '';
+        }
+        if ($('#aiditor-style-name')) {
+            $('#aiditor-style-name').value = '';
+        }
+        if ($('#aiditor-style-description')) {
+            $('#aiditor-style-description').value = '';
+        }
+        if ($('#aiditor-style-prompt')) {
+            $('#aiditor-style-prompt').value = '';
+        }
+    }
+
     function initArticleStyleManager(notice) {
         var generateButton = $('#aiditor-generate-style');
         var saveButton = $('#aiditor-save-style');
@@ -1880,6 +1904,7 @@
         if (saveButton) {
             saveButton.addEventListener('click', function () {
                 var payload = {
+                    style_id: $('#aiditor-style-id') ? $('#aiditor-style-id').value : '',
                     name: $('#aiditor-style-name') ? $('#aiditor-style-name').value : '',
                     description: $('#aiditor-style-description') ? $('#aiditor-style-description').value : '',
                     prompt: $('#aiditor-style-prompt') ? $('#aiditor-style-prompt').value : ''
@@ -1891,6 +1916,7 @@
                     body: JSON.stringify(payload)
                 }).then(function (data) {
                     renderArticleStyles(data.styles || []);
+                    clearArticleStyleEditor();
                     setNotice(notice, '文章风格已保存，可在 AI采集、AI采编 和 AI创作 中选择。', 'success');
                 }).catch(function (error) {
                     setNotice(notice, error.message, 'error');
@@ -1914,6 +1940,9 @@
                 });
 
                 if (button.getAttribute('data-style-action') === 'edit' && style) {
+                    if ($('#aiditor-style-id')) {
+                        $('#aiditor-style-id').value = style.style_id || '';
+                    }
                     if ($('#aiditor-style-name')) {
                         $('#aiditor-style-name').value = style.name || '';
                     }
@@ -1923,7 +1952,7 @@
                     if ($('#aiditor-style-prompt')) {
                         $('#aiditor-style-prompt').value = style.prompt || '';
                     }
-                    setNotice(notice, '已载入文章风格，可修改后保存为同名风格。', 'success');
+                    setNotice(notice, '已载入文章风格，可修改后保存。', 'success');
                     return;
                 }
 

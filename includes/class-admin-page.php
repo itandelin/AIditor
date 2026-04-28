@@ -349,7 +349,7 @@ class AIditor_Admin_Page
                     <div class="aiditor-section-header aiditor-settings-header">
                         <div>
                             <h2><?php echo esc_html__('插件设置', 'aiditor'); ?></h2>
-                            <p class="description"><?php echo esc_html__('队列设置保留在 AI采集 页面中；AI 模型连接配置和文章风格已迁移到左侧“设置”子菜单。', 'aiditor'); ?></p>
+                            <p class="description"><?php echo esc_html__('如需调整默认文章状态、并发数、轮询间隔，可在“AI采集”中的队列设置里配置；文章风格在左侧“设置”子菜单中维护。', 'aiditor'); ?></p>
                         </div>
                         <div class="aiditor-subtabs" aria-label="<?php echo esc_attr__('设置分类', 'aiditor'); ?>">
                             <button type="button" class="button button-small is-active" data-settings-tab="queue"><?php echo esc_html__('队列设置', 'aiditor'); ?></button>
@@ -374,7 +374,7 @@ class AIditor_Admin_Page
                                 <div class="aiditor-form-grid aiditor-form-grid-three">
                                     <div class="aiditor-field"><label for="aiditor-log-retention-days"><?php echo esc_html__('采集日志保留天数', 'aiditor'); ?></label><input id="aiditor-log-retention-days" name="log_retention_days" type="number" min="0" max="365" step="1" required /></div>
                                     <div class="aiditor-field"><label for="aiditor-default-status"><?php echo esc_html__('默认文章状态', 'aiditor'); ?></label><select id="aiditor-default-status" name="default_post_status"><option value="draft"><?php echo esc_html__('草稿', 'aiditor'); ?></option><option value="pending"><?php echo esc_html__('待审核', 'aiditor'); ?></option><option value="private"><?php echo esc_html__('私密', 'aiditor'); ?></option><option value="publish"><?php echo esc_html__('已发布', 'aiditor'); ?></option></select></div>
-                                    <div class="aiditor-field"><label for="aiditor-default-style"><?php echo esc_html__('文章风格', 'aiditor'); ?></label><select id="aiditor-default-style" name="default_article_style"></select><p class="description"><?php echo esc_html__('选项来自“文章风格”标签页。', 'aiditor'); ?></p></div>
+                                    <div class="aiditor-field"><label for="aiditor-default-style"><?php echo esc_html__('默认文章风格', 'aiditor'); ?></label><select id="aiditor-default-style" name="default_article_style"></select><p class="description"><?php echo esc_html__('选项来自左侧“设置”子菜单中的“文章风格”标签页。', 'aiditor'); ?></p></div>
                                 </div>
                             </div>
                         </div>
@@ -402,7 +402,7 @@ class AIditor_Admin_Page
                             <h3><?php echo esc_html__('开始前', 'aiditor'); ?></h3>
                             <ol class="aiditor-guide-list">
                                 <li><?php echo esc_html__('先到“设置”中的“AI 设置”里新增至少一个可用模型，并点击“保存模型配置”。', 'aiditor'); ?></li>
-                                <li><?php echo esc_html__('如需调整默认文章状态、并发数、轮询间隔和文章风格，可在“AI采集”中的队列设置和文章风格里先配置。', 'aiditor'); ?></li>
+                                <li><?php echo esc_html__('如需调整默认文章状态、并发数和轮询间隔，可在“AI采集”的队列设置里配置；如需维护文章风格，可到左侧“设置”子菜单的“文章风格”标签页。', 'aiditor'); ?></li>
                             </ol>
                         </div>
 
@@ -803,6 +803,7 @@ class AIditor_Admin_Page
                             <div class="aiditor-setting-block aiditor-style-form">
                                 <h3><?php echo esc_html__('创建文章风格', 'aiditor'); ?></h3>
                                 <p class="description"><?php echo esc_html__('先填写风格名称和需求，可调用 AI 生成提示词，再保存为全局可选风格。', 'aiditor'); ?></p>
+                                <input id="aiditor-style-id" type="hidden" />
                                 <div class="aiditor-field">
                                     <label for="aiditor-style-name"><?php echo esc_html__('风格名称', 'aiditor'); ?></label>
                                     <input id="aiditor-style-name" type="text" placeholder="<?php echo esc_attr__('例如：深度评测风格', 'aiditor'); ?>" />

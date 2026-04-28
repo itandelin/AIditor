@@ -1086,7 +1086,7 @@ class AIditor_REST_Controller
                 array(
                     'post_id'   => $post_id,
                     'edit_link' => function_exists('get_edit_post_link') ? (string) get_edit_post_link($post_id, 'raw') : '',
-                    'message'   => '创作内容已发布为草稿。',
+                    'message'   => $this->get_publish_success_message($post_status, '创作内容'),
                     'fields'    => $final_fields,
                 )
             );
@@ -1759,6 +1759,18 @@ class AIditor_REST_Controller
         }
 
         return $fields;
+    }
+
+    protected function get_publish_success_message(string $post_status, string $subject = '文章'): string
+    {
+        $labels = array(
+            'draft'   => '草稿',
+            'pending' => '待审核文章',
+            'private' => '私密文章',
+            'publish' => '已发布文章',
+        );
+
+        return $subject . '已发布为' . ($labels[$post_status] ?? '文章') . '。';
     }
 
     protected function build_editing_publish_fields(array $field_schema, array $extracted_fields, array $rewritten_fields, array $publish_fields): array
