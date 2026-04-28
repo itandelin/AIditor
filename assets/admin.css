@@ -888,13 +888,83 @@
     gap: 12px;
 }
 
- .aiditor-editing-field-card {
-    border: 1px solid var(--aiditor-border);
-    border-radius: 8px;
-    display: grid;
-    gap: 10px;
-    padding: 12px;
+
+.aiditor-generic-field-image {
+    margin: 0;
+    max-width: 260px;
 }
+
+.aiditor-generic-field-image img {
+    border: 1px solid rgba(208, 213, 221, 0.72);
+    border-radius: 8px;
+    display: block;
+    height: auto;
+    max-width: 100%;
+    width: 100%;
+}
+
+.aiditor-generic-field-image figcaption {
+    color: var(--aiditor-muted);
+    font-size: 12px;
+    margin-top: 6px;
+    word-break: break-word;
+}
+
+.aiditor-creation-shell {
+    margin-top: 16px;
+}
+
+.aiditor-creation-sidebar-card {
+    margin-bottom: 0;
+}
+
+.aiditor-creation-preview-card,
+.aiditor-creation-publish-shell {
+    margin-bottom: 16px;
+}
+
+.aiditor-creation-result {
+    display: grid;
+    gap: 12px;
+}
+
+.aiditor-creation-result-grid {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.aiditor-creation-image-gallery {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.aiditor-creation-image-card {
+    background: #f8fafc;
+    border: 1px solid rgba(208, 213, 221, 0.72);
+    border-radius: 8px;
+    margin: 0 auto;
+    max-width: 320px;
+    overflow: hidden;
+    width: min(100%, 320px);
+}
+
+.aiditor-creation-image-card img {
+    display: block;
+    height: auto;
+    margin: 0 auto;
+    max-width: 100%;
+    width: 100%;
+}
+
+.aiditor-creation-image-card figcaption {
+    color: var(--aiditor-muted);
+    font-size: 12px;
+    padding: 8px 10px;
+    word-break: break-word;
+}
+
 
 .aiditor-editing-field-card.is-changed {
     border-color: rgba(2, 122, 72, 0.34);
@@ -987,10 +1057,12 @@
     margin: 1.2em 0 0.6em;
 }
 
-.aiditor-editing-value.is-html img,
-.aiditor-editing-value.is-html table,
-.aiditor-editing-value.is-html pre {
-    max-width: 100%;
+.aiditor-editing-value.is-html img {
+    display: block;
+    height: auto;
+    margin: 12px auto;
+    max-width: 72%;
+    width: 72%;
 }
 
 .aiditor-editing-value.is-html table {
@@ -1431,7 +1503,8 @@
     }
 
     .aiditor-model-workbench,
-    .aiditor-editing-shell {
+    .aiditor-editing-shell,
+    .aiditor-creation-result-grid {
         grid-template-columns: 1fr;
     }
 

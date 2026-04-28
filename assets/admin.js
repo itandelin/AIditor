@@ -21,6 +21,13 @@
         genericTemplates: [],
         articleStyles: [],
         modelProfiles: [],
+        creation: {
+            result: null,
+            fieldSchema: [],
+            fieldMapping: [],
+            targetConfig: null,
+            publishSelection: []
+        },
         editing: {
             page: null,
             fieldSchema: [],
@@ -76,12 +83,14 @@
         var template = document.createElement('template');
         var allowedTags = {
             A: true, B: true, BLOCKQUOTE: true, BR: true, CODE: true, DIV: true, EM: true,
-            H2: true, H3: true, H4: true, HR: true, I: true, LI: true, OL: true, P: true,
-            PRE: true, SPAN: true, STRONG: true, TABLE: true, TBODY: true, TD: true,
-            TH: true, THEAD: true, TR: true, U: true, UL: true
+            FIGCAPTION: true, FIGURE: true, H2: true, H3: true, H4: true, HR: true, I: true,
+            IMG: true, LI: true, OL: true, P: true, PRE: true, SPAN: true, STRONG: true,
+            TABLE: true, TBODY: true, TD: true, TH: true, THEAD: true, TR: true, U: true, UL: true
         };
         var allowedAttrs = {
             A: {href: true, title: true, target: true, rel: true},
+            FIGURE: {class: true},
+            IMG: {src: true, alt: true, title: true, width: true, height: true, loading: true},
             TD: {colspan: true, rowspan: true},
             TH: {colspan: true, rowspan: true}
         };
@@ -542,10 +551,36 @@
         }));
     }
 
+    function renderModelProfileSelect(select, selected) {
+        var options;
+
+        if (!select) {
+            return;
+        }
+
+        options = state.modelProfiles.map(function (profile) {
+            var label = profile.name + '（' + profile.model + '）';
+            return '<option value="' + escapeHtml(profile.profile_id) + '">' + escapeHtml(label) + '</option>';
+        }).join('');
+
+        select.innerHTML = options || '<option value="">请先到“设置”页面添加模型配置</option>';
+
+        if (selected && state.modelProfiles.some(function (profile) {
+            return profile.profile_id === selected;
+        })) {
+            select.value = selected;
+        }
+
+        if (!select.value && state.modelProfiles[0]) {
+            select.value = state.modelProfiles[0].profile_id;
+        }
+    }
+
     function renderModelProfileOptions(selected) {
         var defaultSelect = $('#aiditor-default-model-profile');
         var runSelect = $('#aiditor-run-model-profile');
         var editingSelect = $('#aiditor-editing-model-profile');
+        var creationSelect = $('#aiditor-creation-model-profile');
         var options = state.modelProfiles.map(function (profile) {
             var label = profile.name + '（' + profile.model + '）';
             return '<option value="' + escapeHtml(profile.profile_id) + '">' + escapeHtml(label) + '</option>';
@@ -587,6 +622,8 @@
                 editingSelect.value = state.modelProfiles[0].profile_id;
             }
         }
+
+        renderModelProfileSelect(creationSelect, selected);
     }
 
     function renderModelProfiles(selected) {
@@ -801,8 +838,8 @@
         });
     }
 
-    function renderArticleStyleOptions(styles, selected) {
-        var select = $('#aiditor-default-style');
+    function renderArticleStyleOptions(styles, selected, selector) {
+        var select = $(selector || '#aiditor-default-style');
 
         if (!select) {
             return;
@@ -822,6 +859,7 @@
 
         state.articleStyles = styles || [];
         renderArticleStyleOptions(state.articleStyles, (getCurrentSettings() || {}).default_article_style || 'editorial-guide');
+        renderArticleStyleOptions(state.articleStyles, '', '#aiditor-creation-style-preset');
 
         if (!list) {
             return;
@@ -1342,19 +1380,37 @@
         state.pollIntervalMs = 0;
     }
 
-    function initTabs() {
-        var tabs = document.querySelectorAll('[data-tab-target]');
-        tabs.forEach(function (tab) {
-            tab.addEventListener('click', function () {
-                tabs.forEach(function (button) {
-                    button.classList.remove('nav-tab-active');
-                });
-                tab.classList.add('nav-tab-active');
+    function initTabs(scope) {
+        var root = scope || document;
+        var wrappers = root.querySelectorAll('.aiditor-tabs');
 
-                document.querySelectorAll('[data-tab-panel]').forEach(function (panel) {
-                    var active = panel.getAttribute('data-tab-panel') === tab.getAttribute('data-tab-target');
-                    panel.hidden = !active;
-                    panel.classList.toggle('is-active', active);
+        wrappers.forEach(function (wrapper) {
+            var tabs = $all('[data-tab-target]', wrapper);
+            var panelRoot = wrapper.parentElement;
+            var panels;
+
+            if (!panelRoot) {
+                return;
+            }
+
+            panels = $all(':scope > [data-tab-panel]', panelRoot);
+            if (!panels.length) {
+                panels = $all('[data-tab-panel]', panelRoot);
+            }
+
+            tabs.forEach(function (tab) {
+                tab.addEventListener('click', function () {
+                    var target = tab.getAttribute('data-tab-target') || '';
+
+                    tabs.forEach(function (button) {
+                        button.classList.toggle('nav-tab-active', button === tab);
+                    });
+
+                    panels.forEach(function (currentPanel) {
+                        var active = currentPanel.getAttribute('data-tab-panel') === target;
+                        currentPanel.hidden = !active;
+                        currentPanel.classList.toggle('is-active', active);
+                    });
                 });
             });
         });
@@ -2215,6 +2271,26 @@
             }).join('') + '</tbody></table>';
     }
 
+    function isImageFieldKey(key) {
+        return /(^|_)(cover_image_url|cover|featured_image|thumbnail|image|img|photo)(_|$)/i.test(String(key || ''));
+    }
+
+    function renderGenericFieldValue(key, value) {
+        var text;
+
+        if (value && typeof value === 'object') {
+            text = JSON.stringify(value, null, 2);
+        } else {
+            text = String(value || '');
+        }
+
+        if (isImageFieldKey(key) && /^https?:\/\//i.test(text.trim())) {
+            return '<figure class="aiditor-generic-field-image"><img src="' + escapeHtml(text.trim()) + '" alt="" loading="lazy" /><figcaption>' + escapeHtml(text.trim()) + '</figcaption></figure>';
+        }
+
+        return escapeHtml(text.slice(0, 1200));
+    }
+
     function renderGenericFieldsPanel(data) {
         var fields = data && data.fields ? data.fields : null;
         var keys;
@@ -2230,12 +2306,7 @@
         return '<table class="widefat striped aiditor-visual-table"><thead><tr>' +
             '<th>字段</th><th>内容</th>' +
             '</tr></thead><tbody>' + keys.map(function (key) {
-                var value = fields[key];
-                if (typeof value === 'object') {
-                    value = JSON.stringify(value, null, 2);
-                }
-
-                return '<tr><td><strong>' + escapeHtml(key) + '</strong></td><td>' + escapeHtml(String(value || '').slice(0, 1200)) + '</td></tr>';
+                return '<tr><td><strong>' + escapeHtml(key) + '</strong></td><td>' + renderGenericFieldValue(key, fields[key]) + '</td></tr>';
             }).join('') + '</tbody></table>';
     }
 
@@ -2525,7 +2596,514 @@
     }
 
     function getEditingTargetConfig() {
-        return state.editing.targetConfig || {target_taxonomies: [], extra_taxonomies: [], post_types: []};
+        return state.editing.targetConfig || {target_taxonomies: [], extra_taxonomies: [], post_types: [], meta_fields: []};
+    }
+
+    function getCreationTargetConfig() {
+        return state.creation.targetConfig || {target_taxonomies: [], extra_taxonomies: [], post_types: [], meta_fields: []};
+    }
+
+    function findCreationTargetTaxonomy(name) {
+        var taxonomies = getCreationTargetConfig().target_taxonomies || [];
+
+        return taxonomies.find(function (taxonomy) {
+            return taxonomy.name === name;
+        }) || null;
+    }
+
+    function renderCreationPostTypeOptions(postTypes) {
+        var select = $('#aiditor-creation-post-type');
+        if (!select) {
+            return;
+        }
+
+        select.innerHTML = (postTypes || []).map(function (postType) {
+            return '<option value="' + escapeHtml(postType.name) + '">' + escapeHtml(postType.label) + '</option>';
+        }).join('');
+    }
+
+    function renderCreationTargetTaxonomies(targetTaxonomies) {
+        var select = $('#aiditor-creation-target-taxonomy');
+        if (!select) {
+            return;
+        }
+
+        select.innerHTML = (targetTaxonomies || []).map(function (taxonomy) {
+            return '<option value="' + escapeHtml(taxonomy.name) + '">' + escapeHtml(taxonomy.label) + '</option>';
+        }).join('');
+    }
+
+    function renderCreationExtraTaxonomies(extraTaxonomies) {
+        var container = $('#aiditor-creation-extra-taxonomy-fields');
+        if (!container) {
+            return;
+        }
+
+        if (!extraTaxonomies || !extraTaxonomies.length) {
+            container.innerHTML = '<p class="description">当前文章类型没有可选的附加分类法。</p>';
+            return;
+        }
+
+        container.innerHTML = extraTaxonomies.map(function (taxonomy) {
+            var options = (taxonomy.terms || []).map(function (term) {
+                return '<option value="' + escapeHtml(term.term_id) + '">' + escapeHtml(term.name) + '</option>';
+            }).join('');
+
+            return '<div class="aiditor-extra-taxonomy">' +
+                '<label for="aiditor-creation-extra-' + escapeHtml(taxonomy.name) + '">' + escapeHtml(taxonomy.label) + '</label>' +
+                '<select id="aiditor-creation-extra-' + escapeHtml(taxonomy.name) + '" multiple data-creation-extra-taxonomy="' + escapeHtml(taxonomy.name) + '">' +
+                options +
+                '</select>' +
+                '</div>';
+        }).join('');
+    }
+
+    function getSelectedCreationTargetTaxonomy() {
+        var select = $('#aiditor-creation-target-taxonomy');
+        return select ? select.value : '';
+    }
+
+    function renderCreationRootTermLevel(taxonomy) {
+        var container = $('#aiditor-creation-term-levels');
+        if (!container) {
+            return;
+        }
+
+        if (!taxonomy || !taxonomy.root_terms || !taxonomy.root_terms.length) {
+            container.innerHTML = '<p class="description">当前所选分类法下没有可选的顶级目录。</p>';
+            return;
+        }
+
+        container.innerHTML = '';
+        appendCreationTermLevel(container, taxonomy.name, taxonomy.root_terms, 0);
+    }
+
+    function appendCreationTermLevel(container, taxonomyName, terms, levelIndex) {
+        var wrapper = document.createElement('div');
+        wrapper.className = 'aiditor-term-level';
+        wrapper.setAttribute('data-level-index', String(levelIndex));
+
+        var select = document.createElement('select');
+        select.innerHTML = '<option value="">请选择…</option>' + (terms || []).map(function (term) {
+            return '<option value="' + escapeHtml(term.term_id) + '" data-has-children="' + (term.has_children ? '1' : '0') + '">' + escapeHtml(term.name) + '</option>';
+        }).join('');
+
+        select.addEventListener('change', function () {
+            trimCreationTermLevels(levelIndex);
+
+            if (!select.value) {
+                return;
+            }
+
+            var selectedOption = select.options[select.selectedIndex];
+            var hasChildren = selectedOption && selectedOption.getAttribute('data-has-children') === '1';
+
+            if (!hasChildren) {
+                return;
+            }
+
+            api('terms?taxonomy=' + encodeURIComponent(taxonomyName) + '&parent=' + encodeURIComponent(select.value))
+                .then(function (data) {
+                    if (data.terms && data.terms.length) {
+                        appendCreationTermLevel(container, taxonomyName, data.terms, levelIndex + 1);
+                    }
+                });
+        });
+
+        wrapper.appendChild(select);
+        container.appendChild(wrapper);
+    }
+
+    function trimCreationTermLevels(levelIndex) {
+        $all('.aiditor-term-level', $('#aiditor-creation-term-levels')).forEach(function (level) {
+            if (Number(level.getAttribute('data-level-index')) > levelIndex) {
+                level.remove();
+            }
+        });
+    }
+
+    function getSelectedCreationTargetTermId() {
+        var selects = $all('.aiditor-term-level select', $('#aiditor-creation-term-levels'));
+        var selected = 0;
+
+        selects.forEach(function (select) {
+            if (select.value) {
+                selected = Number(select.value);
+            }
+        });
+
+        return selected;
+    }
+
+    function loadCreationTargetConfiguration(postType) {
+        return api('targets?post_type=' + encodeURIComponent(postType)).then(function (data) {
+            state.creation.targetConfig = data.targets || null;
+
+            renderCreationPostTypeOptions((state.creation.targetConfig && state.creation.targetConfig.post_types) || []);
+            if ($('#aiditor-creation-post-type')) {
+                $('#aiditor-creation-post-type').value = data.post_type;
+            }
+
+            renderCreationTargetTaxonomies((state.creation.targetConfig && state.creation.targetConfig.target_taxonomies) || []);
+            renderCreationExtraTaxonomies((state.creation.targetConfig && state.creation.targetConfig.extra_taxonomies) || []);
+
+            var selectedTaxonomy = getSelectedCreationTargetTaxonomy();
+            var taxonomy = findCreationTargetTaxonomy(selectedTaxonomy) || (((state.creation.targetConfig && state.creation.targetConfig.target_taxonomies) || [])[0] || null);
+
+            if (taxonomy && $('#aiditor-creation-target-taxonomy')) {
+                $('#aiditor-creation-target-taxonomy').value = taxonomy.name;
+            }
+
+            renderCreationRootTermLevel(taxonomy);
+            renderCreationFieldMapping();
+        });
+    }
+
+    function ensureCreationDefaults() {
+        if (state.creation.fieldSchema && state.creation.fieldSchema.length) {
+            return;
+        }
+
+        state.creation.fieldSchema = [
+            {key: 'title', label: '标题', type: 'text'},
+            {key: 'summary', label: '摘要', type: 'textarea'},
+            {key: 'keywords', label: '关键词', type: 'text'},
+            {key: 'content', label: '正文', type: 'html'},
+            {key: 'cover_image_url', label: '封面图链接', type: 'url'}
+        ];
+        state.creation.fieldMapping = buildDefaultEditingMapping(state.creation.fieldSchema, getCreationTargetConfig());
+    }
+
+    function getCreationFieldSchemaMap() {
+        var map = {};
+        (state.creation.fieldSchema || []).forEach(function (field) {
+            if (field && field.key) {
+                map[sanitizeFieldKey(field.key)] = field;
+            }
+        });
+        return map;
+    }
+
+    function getCreationFieldLabel(key) {
+        var field = getCreationFieldSchemaMap()[sanitizeFieldKey(key)];
+        return field && field.label ? field.label : key;
+    }
+
+    function getCreationFieldType(key) {
+        var field = getCreationFieldSchemaMap()[sanitizeFieldKey(key)];
+        return field && field.type ? field.type : 'text';
+    }
+
+    function renderCreationResult() {
+        var container = $('#aiditor-creation-result');
+        var result = state.creation.result || null;
+        var imageItems;
+
+        if (!container) {
+            return;
+        }
+
+        if (!result) {
+            container.innerHTML = '<p class="description">完成创作后，这里会显示标题、摘要、关键词、正文与图片。</p>';
+            return;
+        }
+
+        imageItems = Array.isArray(result.inline_images) ? result.inline_images : [];
+
+        container.innerHTML = '' +
+            '<div class="aiditor-creation-result-grid">' +
+                '<article class="aiditor-editing-field-card">' +
+                    '<div class="aiditor-editing-field-card-header"><div><strong>标题</strong><div class="aiditor-editing-field-card-meta">title · text</div></div></div>' +
+                    renderEditingValue(result.title || '', 'text') +
+                '</article>' +
+                '<article class="aiditor-editing-field-card">' +
+                    '<div class="aiditor-editing-field-card-header"><div><strong>摘要</strong><div class="aiditor-editing-field-card-meta">summary · textarea</div></div></div>' +
+                    renderEditingValue(result.summary || '', 'textarea') +
+                '</article>' +
+            '</div>' +
+            '<article class="aiditor-editing-field-card">' +
+                '<div class="aiditor-editing-field-card-header"><div><strong>关键词</strong><div class="aiditor-editing-field-card-meta">keywords · text</div></div></div>' +
+                renderEditingValue(result.keywords || '', 'text') +
+            '</article>' +
+            '<article class="aiditor-editing-field-card">' +
+                '<div class="aiditor-editing-field-card-header"><div><strong>正文</strong><div class="aiditor-editing-field-card-meta">content · html</div></div></div>' +
+                renderEditingValue(result.content_html || '', 'html') +
+            '</article>' +
+            (result.cover_image_url ? '<article class="aiditor-editing-field-card"><div class="aiditor-editing-field-card-header"><div><strong>封面图</strong><div class="aiditor-editing-field-card-meta">cover_image_url · url</div></div></div><div class="aiditor-creation-image-gallery"><figure class="aiditor-creation-image-card"><img src="' + escapeHtml(result.cover_image_url) + '" alt="封面图" loading="lazy" /><figcaption>' + escapeHtml(result.cover_image_url) + '</figcaption></figure></div></article>' : '') +
+            (imageItems.length ? '<article class="aiditor-editing-field-card"><div class="aiditor-editing-field-card-header"><div><strong>附加图片</strong><div class="aiditor-editing-field-card-meta">inline_images · image</div></div></div><div class="aiditor-creation-image-gallery">' + imageItems.map(function (item) {
+                var url = typeof item === 'string' ? item : (item && item.url ? item.url : '');
+                var caption = typeof item === 'string' ? item : (item && item.caption ? item.caption : url);
+                return '<figure class="aiditor-creation-image-card"><img src="' + escapeHtml(url) + '" alt="" loading="lazy" /><figcaption>' + escapeHtml(caption || url) + '</figcaption></figure>';
+            }).join('') + '</div></article>' : '');
+    }
+
+    function renderCreationFieldMapping() {
+        var container = $('#aiditor-creation-field-mapping');
+
+        if (!container) {
+            return;
+        }
+
+        if (!state.creation.fieldSchema.length || !state.creation.fieldMapping.length) {
+            container.innerHTML = '<p class="description">完成创作后，这里会自动生成字段映射表。</p>';
+            return;
+        }
+
+        container.innerHTML = state.creation.fieldMapping.map(function (mapping) {
+            var type = mapping.destination_type || 'meta';
+            var destinationInput = type === 'meta'
+                ? buildEditingMetaDestinationControl(mapping.destination || '', 'creation', getCreationTargetConfig())
+                : '<select data-creation-mapping-destination>' + buildEditingDestinationOptions(type, mapping.destination || '') + '</select>';
+
+            return '<div class="aiditor-editing-mapping-row" data-creation-mapping-source="' + escapeHtml(mapping.source) + '">' +
+                '<div class="aiditor-editing-mapping-source"><strong>' + escapeHtml(getCreationFieldLabel(mapping.source)) + '</strong><small>' + escapeHtml(mapping.source) + '</small></div>' +
+                '<select data-creation-mapping-type>' +
+                    '<option value="core"' + (type === 'core' ? ' selected' : '') + '>Core</option>' +
+                    '<option value="meta"' + (type === 'meta' ? ' selected' : '') + '>Meta</option>' +
+                    '<option value="taxonomy"' + (type === 'taxonomy' ? ' selected' : '') + '>Taxonomy</option>' +
+                '</select>' +
+                destinationInput +
+            '</div>';
+        }).join('');
+    }
+
+    function syncCreationSelections() {
+        state.creation.publishSelection = state.creation.fieldMapping.map(function (mapping) {
+            return sanitizeFieldKey(mapping.source);
+        }).filter(function (key, index, list) {
+            return key && list.indexOf(key) === index;
+        });
+    }
+
+    function syncCreationMappingFromDom() {
+        state.creation.fieldMapping = $all('[data-creation-mapping-source]').map(function (row) {
+            var source = sanitizeFieldKey(row.getAttribute('data-creation-mapping-source'));
+            var type = row.querySelector('[data-creation-mapping-type]') ? row.querySelector('[data-creation-mapping-type]').value : 'meta';
+            var destination = '';
+            var metaSelect = row.querySelector('[data-creation-mapping-meta-select]');
+            var destinationInput = row.querySelector('[data-creation-mapping-destination]');
+
+            if (metaSelect && metaSelect.value && metaSelect.value !== '__custom') {
+                destination = metaSelect.value;
+            } else if (destinationInput) {
+                destination = destinationInput.value.trim();
+            }
+
+            return {
+                source: source,
+                destination_type: sanitizeFieldKey(type),
+                destination: sanitizeFieldKey(destination)
+            };
+        });
+        syncCreationSelections();
+    }
+
+    function buildCreationGeneratePayload() {
+        return {
+            model_profile_id: $('#aiditor-creation-model-profile') ? $('#aiditor-creation-model-profile').value : '',
+            prompt: $('#aiditor-creation-prompt') ? $('#aiditor-creation-prompt').value.trim() : '',
+            style_id: $('#aiditor-creation-style-preset') ? $('#aiditor-creation-style-preset').value : '',
+            style_instruction: $('#aiditor-creation-style') ? $('#aiditor-creation-style').value.trim() : ''
+        };
+    }
+
+    function buildCreationPublishPayload() {
+        var extraTaxTerms = {};
+
+        syncCreationMappingFromDom();
+
+        $all('[data-creation-extra-taxonomy]').forEach(function (select) {
+            var selected = Array.prototype.slice.call(select.selectedOptions || []).map(function (option) {
+                return Number(option.value);
+            }).filter(function (value) {
+                return value > 0;
+            });
+
+            if (selected.length) {
+                extraTaxTerms[select.getAttribute('data-creation-extra-taxonomy')] = selected;
+            }
+        });
+
+        return {
+            generated_fields: state.creation.result || {},
+            field_schema: state.creation.fieldSchema || [],
+            publish_fields: state.creation.publishSelection,
+            field_mapping: state.creation.fieldMapping,
+            post_type: $('#aiditor-creation-post-type') ? $('#aiditor-creation-post-type').value : 'post',
+            post_status: $('#aiditor-creation-post-status') ? $('#aiditor-creation-post-status').value : 'draft',
+            target_taxonomy: getSelectedCreationTargetTaxonomy(),
+            target_term_id: getSelectedCreationTargetTermId(),
+            extra_tax_terms: extraTaxTerms
+        };
+    }
+
+    function validateCreationGeneratePayload(payload) {
+        if (!payload.model_profile_id) {
+            return '请选择 AI 模型。';
+        }
+
+        if (!payload.prompt) {
+            return '请填写创作说明。';
+        }
+
+        return '';
+    }
+
+    function validateCreationPublishPayload(payload) {
+        if (!payload.generated_fields || !payload.generated_fields.title || !payload.generated_fields.content_html) {
+            return '请先完成创作。';
+        }
+
+        if (!payload.target_taxonomy) {
+            return '请选择主分类法。';
+        }
+
+        if (!payload.target_term_id) {
+            return '请选择主分类目录。';
+        }
+
+        return '';
+    }
+
+    function bindCreationFieldEvents() {
+        var mappingContainer = $('#aiditor-creation-field-mapping');
+
+        if (!mappingContainer) {
+            return;
+        }
+
+        mappingContainer.addEventListener('change', function (event) {
+            var row;
+            if (!event.target.closest('[data-creation-mapping-source]')) {
+                return;
+            }
+
+            row = event.target.closest('[data-creation-mapping-source]');
+            if (event.target.matches('[data-creation-mapping-type]')) {
+                syncCreationMappingFromDom();
+                renderCreationFieldMapping();
+                return;
+            }
+
+            if (event.target.matches('[data-creation-mapping-meta-select]')) {
+                if (event.target.value === '__custom') {
+                    row.querySelector('[data-creation-mapping-destination]').hidden = false;
+                } else {
+                    row.querySelector('[data-creation-mapping-destination]').value = event.target.value;
+                    row.querySelector('[data-creation-mapping-destination]').hidden = true;
+                }
+                syncCreationMappingFromDom();
+                return;
+            }
+
+            syncCreationMappingFromDom();
+        });
+
+        mappingContainer.addEventListener('input', function (event) {
+            if (event.target.matches('[data-creation-mapping-destination]')) {
+                syncCreationMappingFromDom();
+            }
+        });
+    }
+
+    function initCreationPage() {
+        var generateButton = $('#aiditor-creation-generate-button');
+        var publishButton = $('#aiditor-creation-publish-button');
+        var form = $('#aiditor-creation-form');
+        var postTypeSelect = $('#aiditor-creation-post-type');
+        var taxonomySelect = $('#aiditor-creation-target-taxonomy');
+        var notice = $('#aiditor-creation-notice');
+        var publishNotice = $('#aiditor-creation-publish-notice');
+        var defaultModel = (getCurrentSettings() || {}).default_model_profile_id || '';
+
+        if (!form) {
+            return;
+        }
+
+        ensureCreationDefaults();
+        renderCreationResult();
+        renderCreationFieldMapping();
+        bindCreationFieldEvents();
+        renderArticleStyleOptions(state.articleStyles, '', '#aiditor-creation-style-preset');
+
+        if ($('#aiditor-creation-model-profile')) {
+            renderModelProfileSelect($('#aiditor-creation-model-profile'), defaultModel);
+        }
+
+        if (postTypeSelect) {
+            postTypeSelect.addEventListener('change', function () {
+                loadCreationTargetConfiguration(postTypeSelect.value).catch(function (error) {
+                    setNotice(publishNotice, error.message, 'error');
+                });
+            });
+        }
+
+        if (taxonomySelect) {
+            taxonomySelect.addEventListener('change', function () {
+                renderCreationRootTermLevel(findCreationTargetTaxonomy(taxonomySelect.value));
+                renderCreationFieldMapping();
+            });
+        }
+
+        if (generateButton) {
+            generateButton.addEventListener('click', function () {
+                var payload = buildCreationGeneratePayload();
+                var validationError = validateCreationGeneratePayload(payload);
+
+                if (validationError) {
+                    setNotice(notice, validationError, 'error');
+                    return;
+                }
+
+                setNotice(notice, 'AI 正在创作文章…', 'success');
+                api('creation/generate', {
+                    method: 'POST',
+                    body: JSON.stringify(payload)
+                }).then(function (data) {
+                    state.creation.result = data.article || null;
+                    state.creation.fieldSchema = data.field_schema || state.creation.fieldSchema;
+                    state.creation.fieldMapping = buildDefaultEditingMapping(state.creation.fieldSchema, getCreationTargetConfig());
+                    syncCreationSelections();
+                    renderCreationResult();
+                    renderCreationFieldMapping();
+                    setNotice(notice, '创作完成。请检查右侧结果并确认发布设置。', 'success');
+                    setNotice(publishNotice, '已生成默认字段映射，请确认后发布。', 'success');
+                }).catch(function (error) {
+                    setNotice(notice, error.message, 'error');
+                });
+            });
+        }
+
+        if (publishButton) {
+            publishButton.addEventListener('click', function () {
+                var payload = buildCreationPublishPayload();
+                var validationError = validateCreationPublishPayload(payload);
+
+                if (validationError) {
+                    setNotice(publishNotice, validationError, 'error');
+                    return;
+                }
+
+                setNotice(publishNotice, '正在发布创作内容…', 'success');
+                api('creation/publish', {
+                    method: 'POST',
+                    body: JSON.stringify(payload)
+                }).then(function (data) {
+                    var message = data.message || '文章已创建。';
+                    if (data.edit_link) {
+                        message += ' <a href="' + escapeHtml(data.edit_link) + '">编辑文章</a>';
+                    }
+                    publishNotice.className = 'aiditor-notice is-success';
+                    publishNotice.innerHTML = sanitizeRichHtml(message);
+                }).catch(function (error) {
+                    setNotice(publishNotice, error.message, 'error');
+                });
+            });
+        }
+
+        loadCreationTargetConfiguration('post').catch(function (error) {
+            setNotice(publishNotice, error.message, 'error');
+        });
     }
 
     function findEditingTargetTaxonomy(name) {
@@ -2881,12 +3459,13 @@
         return options;
     }
 
-    function getEditingMetaOptions() {
-        return getEditingTargetConfig().meta_fields || [];
+    function getEditingMetaOptions(targetConfig) {
+        var config = targetConfig || getEditingTargetConfig();
+        return config.meta_fields || [];
     }
 
-    function buildEditingMetaDestinationControl(currentValue) {
-        var options = getEditingMetaOptions();
+    function buildEditingMetaDestinationControl(currentValue, dataPrefix, targetConfig) {
+        var options = getEditingMetaOptions(targetConfig);
         var hasCurrent = options.some(function (item) {
             return item.key === currentValue;
         });
@@ -2895,14 +3474,15 @@
             return '<option value="' + escapeHtml(item.key) + '"' + (currentValue === item.key ? ' selected' : '') + '>' + escapeHtml((item.label || item.key) + '（' + item.key + source + '）') + '</option>';
         }).join('');
         var customSelected = currentValue && !hasCurrent;
+        var prefix = dataPrefix || 'editing';
 
         return '<div class="aiditor-editing-meta-destination">' +
-            '<select data-editing-mapping-meta-select>' +
+            '<select data-' + prefix + '-mapping-meta-select>' +
                 '<option value="">请选择安全 Meta 字段…</option>' +
                 selectOptions +
                 '<option value="__custom"' + (customSelected ? ' selected' : '') + '>自定义 Meta Key…</option>' +
             '</select>' +
-            '<input type="text" data-editing-mapping-destination value="' + escapeHtml(currentValue || '') + '" placeholder="Meta Key"' + (customSelected ? '' : ' hidden') + ' />' +
+            '<input type="text" data-' + prefix + '-mapping-destination value="' + escapeHtml(currentValue || '') + '" placeholder="Meta Key"' + (customSelected ? '' : ' hidden') + ' />' +
         '</div>';
     }
 
@@ -3156,7 +3736,9 @@
         var publishNotice = $('#aiditor-editing-publish-notice');
 
         populateSettings(config.settings || {});
+        initTabs();
         bindEditingFieldEvents();
+        initCreationPage();
         renderEditingSourceFields();
         renderEditingRewrittenFields();
         renderEditingFieldMapping();

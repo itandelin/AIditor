@@ -205,6 +205,13 @@ class AIditor_Draft_Writer
             $post_data['post_content'] = self::convert_html_to_block_content((string) ($fields['content'] ?? ''));
         }
 
+        if (! empty($import_request['creation_media'])) {
+            $content_result = $this->localize_creation_content_images((string) ($fields['content'] ?? ''), (string) ($import_request['cover_image_url'] ?? ''));
+            if ('' !== $content_result['content_html']) {
+                $post_data['post_content'] = self::convert_html_to_block_content($content_result['content_html']);
+            }
+        }
+
         if ($existing_post_id > 0) {
             $this->assert_can_update_existing_post($existing_post_id, $source);
 
@@ -254,7 +261,13 @@ class AIditor_Draft_Writer
         }
 
         $effective_post_type = function_exists('get_post_type') ? (string) get_post_type($post_id) : $post_type;
-        $this->write_single_category_name_tag($post_id, $effective_post_type ?: $post_type, $target_taxonomy, $target_term_id);
+        if (empty($taxonomy_updates['post_tag'])) {
+            $this->write_single_category_name_tag($post_id, $effective_post_type ?: $post_type, $target_taxonomy, $target_term_id);
+        }
+
+        if (! empty($import_request['creation_media']) && ! empty($content_result['featured_image_id'])) {
+            $this->assign_featured_image($post_id, (int) $content_result['featured_image_id']);
+        }
 
         update_post_meta($post_id, '_aiditor_ingest_source_url', (string) ($source['source_url'] ?? ''));
 
@@ -416,6 +429,138 @@ class AIditor_Draft_Writer
         }
 
         return trim((string) $value);
+    }
+
+    protected function localize_creation_content_images(string $content_html, string $cover_image_url = ''): array
+    {
+        $content_html = trim($content_html);
+        $featured_image_id = 0;
+
+        if ('' === $content_html) {
+            return array(
+                'content_html'       => '',
+                'featured_image_id'  => 0,
+            );
+        }
+
+        if (! class_exists('DOMDocument')) {
+            return array(
+                'content_html'      => $content_html,
+                'featured_image_id' => 0,
+            );
+        }
+
+        $document = new DOMDocument('1.0', 'UTF-8');
+        $previous = libxml_use_internal_errors(true);
+        $loaded = $document->loadHTML('<?xml encoding="utf-8" ?><body>' . $content_html . '</body>', LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
+        libxml_clear_errors();
+        libxml_use_internal_errors($previous);
+
+        if (! $loaded) {
+            return array(
+                'content_html'      => $content_html,
+                'featured_image_id' => 0,
+            );
+        }
+
+        $images = $document->getElementsByTagName('img');
+        $cover_image_url = esc_url_raw(trim($cover_image_url));
+
+        for ($index = $images->length - 1; $index >= 0; $index--) {
+            $image = $images->item($index);
+            if (! $image instanceof DOMElement) {
+                continue;
+            }
+
+            $remote_url = esc_url_raw(trim((string) $image->getAttribute('src')));
+            if ('' === $remote_url) {
+                continue;
+            }
+
+            $attachment = $this->sideload_remote_image($remote_url);
+            if (null === $attachment) {
+                continue;
+            }
+
+            $image->setAttribute('src', $attachment['url']);
+            if ('' === trim((string) $image->getAttribute('alt')) && '' !== $attachment['title']) {
+                $image->setAttribute('alt', $attachment['title']);
+            }
+
+            if (0 === $featured_image_id && ('' === $cover_image_url || $cover_image_url === $remote_url)) {
+                $featured_image_id = (int) $attachment['id'];
+            }
+        }
+
+        if (0 === $featured_image_id && '' !== $cover_image_url) {
+            $attachment = $this->sideload_remote_image($cover_image_url);
+            if (null !== $attachment) {
+                $featured_image_id = (int) $attachment['id'];
+            }
+        }
+
+        $body = $document->getElementsByTagName('body')->item(0);
+        $html = '';
+
+        if ($body instanceof DOMElement) {
+            foreach ($body->childNodes as $child) {
+                $html .= $document->saveHTML($child);
+            }
+        }
+
+        return array(
+            'content_html'      => '' !== trim($html) ? $html : $content_html,
+            'featured_image_id' => $featured_image_id,
+        );
+    }
+
+    protected function sideload_remote_image(string $url): ?array
+    {
+        $url = esc_url_raw(trim($url));
+        if ('' === $url || ! function_exists('download_url') || ! function_exists('media_handle_sideload')) {
+            return null;
+        }
+
+        require_once ABSPATH . 'wp-admin/includes/file.php';
+        require_once ABSPATH . 'wp-admin/includes/media.php';
+        require_once ABSPATH . 'wp-admin/includes/image.php';
+
+        $tmp = download_url($url, 30);
+        if (is_wp_error($tmp)) {
+            return null;
+        }
+
+        $path = wp_parse_url($url, PHP_URL_PATH);
+        $filename = basename(is_string($path) ? $path : '');
+        if ('' === $filename) {
+            $filename = 'aiditor-image-' . wp_generate_password(8, false) . '.jpg';
+        }
+
+        $file_array = array(
+            'name'     => sanitize_file_name($filename),
+            'tmp_name' => $tmp,
+        );
+
+        $attachment_id = media_handle_sideload($file_array, 0);
+        if (is_wp_error($attachment_id)) {
+            @unlink($tmp);
+            return null;
+        }
+
+        return array(
+            'id'    => (int) $attachment_id,
+            'url'   => (string) wp_get_attachment_url($attachment_id),
+            'title' => trim((string) get_the_title($attachment_id)),
+        );
+    }
+
+    protected function assign_featured_image(int $post_id, int $attachment_id): void
+    {
+        if ($post_id <= 0 || $attachment_id <= 0 || ! function_exists('set_post_thumbnail')) {
+            return;
+        }
+
+        set_post_thumbnail($post_id, $attachment_id);
     }
 
     protected function normalize_taxonomy_terms($value): array

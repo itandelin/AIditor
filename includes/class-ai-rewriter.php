@@ -157,7 +157,9 @@ class AIditor_AI_Rewriter
             'Authorization' => 'Bearer ' . trim((string) $settings['api_key']),
             'Content-Type'  => 'application/json',
         );
-        $payload  = $this->build_field_rewrite_payload($fields, $field_schema, $targets, $instruction, $settings);
+        $term_map = $this->build_rewrite_term_map($fields, $targets);
+        $protected_fields = $this->protect_rewrite_terms($fields, $term_map);
+        $payload  = $this->build_field_rewrite_payload($protected_fields, $field_schema, $targets, $instruction, $settings);
 
         $rewritten = null;
         $last_exception = null;
@@ -172,7 +174,10 @@ class AIditor_AI_Rewriter
                     (int) $settings['request_timeout']
                 );
 
-                $rewritten = $this->decode_rewritten_fields_payload($this->extract_message_content($response));
+                $rewritten = $this->restore_rewrite_terms(
+                    $this->decode_rewritten_fields_payload($this->extract_message_content($response)),
+                    $term_map
+                );
                 break;
             } catch (Throwable $exception) {
                 $last_exception = $this->normalize_runtime_exception($exception);
@@ -224,6 +229,115 @@ class AIditor_AI_Rewriter
         );
     }
 
+    protected function build_rewrite_term_map(array $fields, array $targets): array
+    {
+        $terms = array();
+
+        foreach ($targets as $key) {
+            $value = $fields[$key] ?? '';
+            if (! is_scalar($value)) {
+                continue;
+            }
+
+            foreach ($this->extract_protected_terms((string) $value) as $term) {
+                $terms[$term] = true;
+            }
+        }
+
+        $terms = array_keys($terms);
+        usort(
+            $terms,
+            function (string $left, string $right): int {
+                return $this->text_length($right) <=> $this->text_length($left);
+            }
+        );
+
+        $map = array();
+        foreach ($terms as $index => $term) {
+            $map[sprintf('__AIDITOR_TERM_%03d__', $index + 1)] = $term;
+        }
+
+        return $map;
+    }
+
+    protected function extract_protected_terms(string $text): array
+    {
+        $plain = function_exists('wp_strip_all_tags') ? wp_strip_all_tags($text, true) : strip_tags($text);
+        $terms = array();
+        $patterns = array(
+            '/\\b[A-Z][A-Za-z0-9]*(?:[ ._-]+[A-Z][A-Za-z0-9]*)+(?:（[^）]{1,40}）|\\([^)]{1,40}\\))?/u',
+            '/\\b[A-Z]{2,}[A-Za-z0-9]*(?:（[^）]{1,40}）|\\([^)]{1,40}\\))?/u',
+            '/\\b[A-Za-z]+(?:\\.[A-Za-z0-9]+)+\\b/u',
+            '/\\b[A-Za-z]+[0-9]+[A-Za-z0-9._-]*\\b/u',
+        );
+
+        foreach ($patterns as $pattern) {
+            if (! preg_match_all($pattern, $plain, $matches)) {
+                continue;
+            }
+
+            foreach ($matches[0] as $term) {
+                $term = trim((string) $term);
+                if ($this->should_protect_term($term)) {
+                    $terms[$term] = true;
+                }
+            }
+        }
+
+        return array_keys($terms);
+    }
+
+    protected function should_protect_term(string $term): bool
+    {
+        if ('' === $term || $this->text_length($term) < 2) {
+            return false;
+        }
+
+        if (preg_match('/^https?:\\/\\//i', $term)) {
+            return false;
+        }
+
+        if (preg_match('/[A-Z][A-Za-z0-9]*(?:[ ._-]+[A-Z][A-Za-z0-9]*)|[A-Z]{2,}|[A-Za-z]+[0-9]|[A-Za-z]+\\.[A-Za-z0-9]+/u', $term)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    protected function protect_rewrite_terms(array $fields, array $term_map): array
+    {
+        if (empty($term_map)) {
+            return $fields;
+        }
+
+        foreach ($fields as $key => $value) {
+            if (! is_string($value) || '' === $value) {
+                continue;
+            }
+
+            $fields[$key] = str_replace(array_values($term_map), array_keys($term_map), $value);
+        }
+
+        return $fields;
+    }
+
+    protected function restore_rewrite_terms(array $fields, array $term_map): array
+    {
+        if (empty($term_map)) {
+            return $fields;
+        }
+
+        foreach ($fields as $key => $value) {
+            if (! is_string($value) || '' === $value) {
+                continue;
+            }
+
+            $fields[$key] = str_replace(array_keys($term_map), array_values($term_map), $value);
+        }
+
+        return $fields;
+    }
+
     protected function build_field_rewrite_payload(array $fields, array $field_schema, array $targets, string $instruction, array $settings): array
     {
         $temperature = isset($settings['temperature']) ? (float) $settings['temperature'] : 0.2;
@@ -266,10 +380,13 @@ class AIditor_AI_Rewriter
                 '只允许重写用户指定的字段，不得新增未指定字段，不得改写 URL、图片、日期、数字等事实字段。',
                 '必须保留事实含义，不得编造来源页面没有的信息，不得添加虚假功能、价格、机构、时间或链接。',
                 '标题字段如果被指定，只做必要润色，保持专有名词、产品名和事实主体，不要标题党。',
+                '正文重写必须保留原文中的专有名词、产品名、品牌名、人名、机构名、地名、技术名词、翻译词、英文原词和缩写，不得擅自替换、意译、扩写缩写或改成另一个称呼。',
                 '摘要字段应写成自然、克制的信息摘要，不要机械翻译腔、营销腔或“本文介绍了”式模板句。',
                 '正文字段应输出适合 Gutenberg 入库的 HTML 片段，可以包含 <p>、<h2>、<ol>、<ul>、<li>、<strong>、<em>，不要输出 H1。',
+                '如果 content 正文字段被指定重写，必须以原正文为基础扩写和重组，保留全部有效信息，并补充更完整的背景、解释、结构和可读细节；正文纯文本长度不得低于原文纯文本长度。',
+                '如果采集需求要求结合最新消息或网络信息，请围绕原文主题补充通用、谨慎、可验证的最新背景表述；无法确认的细节不要编造。',
                 '如果用户要求重写，就必须对被选中的可改写字段做实质性改写，而不只是拆段、换行、替换个别虚词、调整标点或简单同义词替换。',
-                '禁止把原文基本原样照搬；如果某字段确实没有更好的改写空间，也必须主动压缩、重组句式或调整表达，使读感明显不同但事实不变。',
+                '禁止把原文基本原样照搬；除 summary 等摘要字段外，不要主动压缩内容。content 必须在不改变事实的前提下扩展表达、重组结构、提升信息密度和可读性。',
                 '不要输出来源网址、跳转提示、“详情可查看”、免责声明、AI 生成痕迹或 Markdown 代码块。',
                 '返回严格 JSON 对象，key 必须与被重写字段 key 一致。',
                 '写作风格遵循：' . $style,
@@ -298,7 +415,9 @@ class AIditor_AI_Rewriter
                 '需要重写的字段：' . (string) $json_encode($target_fields, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
                 '字段输出要求：text 字段返回纯文本；textarea 字段返回纯文本自然段；html 字段返回可直接写入 WordPress 正文的 HTML 片段。',
                 '重写强约束：输出必须与原字段在表达上明显不同，不能只是按原文重新分段、轻微改标点、替换少量近义词或保持原句顺序照搬。',
-                '正文 content 如被重写，优先重新组织段落、合并重复信息、压缩赘述、重写句式；摘要 summary 如被重写，优先改成更凝练的概述，而不是复制正文开头。',
+                '术语保留约束：原文中的专有名词、翻译词、英文原词、缩写、型号、版本号、产品名、品牌名、人名、机构名、地名和技术名词必须原样保留；不要把 API、SDK、AI、WordPress、Gutenberg 等缩写或名称改写成别的表述。',
+                '正文 content 如被重写，必须保留原文全部有效信息，以原正文为基础扩写、重组段落、补充背景解释和最新相关语境，不能写成摘要，不能压缩篇幅；content 的纯文本长度必须大于或等于原 content 纯文本长度。',
+                '摘要 summary 如被重写，优先改成更凝练的概述，而不是复制正文开头。',
                 '只返回需要重写字段的 JSON，例如 {"summary":"...","content":"<p>...</p>"}。不要返回 notes、confidence 或解释文字。',
             )
         );
@@ -689,6 +808,12 @@ class AIditor_AI_Rewriter
             $original = $fields[$key] ?? null;
             $merged = $merged_fields[$key] ?? null;
 
+            if ('content' === $key && $this->rewritten_content_is_shorter($original, $merged, (string) ($field['type'] ?? 'text'))) {
+                $merged_fields[$key] = $original;
+                $unchanged_keys[] = $key;
+                continue;
+            }
+
             if (! $this->field_values_are_meaningfully_different($original, $merged, (string) ($field['type'] ?? 'text'))) {
                 $unchanged_keys[] = $key;
                 continue;
@@ -705,6 +830,27 @@ class AIditor_AI_Rewriter
             'requested_keys'  => $requested_keys,
             'unchanged_keys'  => array_values($unchanged_keys),
         );
+    }
+
+    protected function rewritten_content_is_shorter($original, $rewritten, string $type): bool
+    {
+        $original_text = $this->normalize_field_value_for_comparison($original, $type);
+        $rewritten_text = $this->normalize_field_value_for_comparison($rewritten, $type);
+
+        if ('' === $original_text || '' === $rewritten_text) {
+            return false;
+        }
+
+        return $this->text_length($rewritten_text) < $this->text_length($original_text);
+    }
+
+    protected function text_length(string $text): int
+    {
+        if (function_exists('mb_strlen')) {
+            return mb_strlen($text, 'UTF-8');
+        }
+
+        return strlen($text);
     }
 
     protected function field_values_are_meaningfully_different($original, $rewritten, string $type): bool

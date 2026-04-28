@@ -252,6 +252,30 @@ class AIditor_REST_Controller
 
         register_rest_route(
             'aiditor/v1',
+            '/creation/generate',
+            array(
+                array(
+                    'methods'             => WP_REST_Server::CREATABLE,
+                    'callback'            => array($this, 'creation_generate_article'),
+                    'permission_callback' => array($this, 'can_manage'),
+                ),
+            )
+        );
+
+        register_rest_route(
+            'aiditor/v1',
+            '/creation/publish',
+            array(
+                array(
+                    'methods'             => WP_REST_Server::CREATABLE,
+                    'callback'            => array($this, 'creation_publish_article'),
+                    'permission_callback' => array($this, 'can_manage'),
+                ),
+            )
+        );
+
+        register_rest_route(
+            'aiditor/v1',
             '/templates',
             array(
                 array(
@@ -795,7 +819,7 @@ class AIditor_REST_Controller
         try {
             $payload      = $this->get_request_payload($request);
             $url          = trim((string) ($payload['url'] ?? ''));
-            $instruction  = trim((string) ($payload['instruction'] ?? '请抽取页面标题、摘要、正文和主要网址。'));
+            $instruction  = trim((string) ($payload['instruction'] ?? '请抽取页面标题、摘要、正文、主要网址和封面图。封面图返回文章主图或特色图的远程绝对 URL。'));
             $field_schema = is_array($payload['field_schema'] ?? null) ? $payload['field_schema'] : $this->get_default_generic_field_schema();
             $page         = $this->page_fetcher->fetch($url);
             $fields       = $this->ai_extractor->extract_fields($page, $field_schema, $instruction);
@@ -950,9 +974,121 @@ class AIditor_REST_Controller
         }
     }
 
-    public function list_templates(): WP_REST_Response
+    public function creation_generate_article(WP_REST_Request $request)
     {
-        return rest_ensure_response(array('templates' => $this->templates->list_templates()));
+        try {
+            $payload            = $this->get_request_payload($request);
+            $prompt             = trim((string) ($payload['prompt'] ?? ''));
+            $style_id           = sanitize_key((string) ($payload['style_id'] ?? ''));
+            $style_instruction  = trim((string) ($payload['style_instruction'] ?? ''));
+            $runtime_settings   = $this->resolve_request_model_settings($payload);
+            $field_schema       = $this->get_default_creation_field_schema();
+            $style_prompt       = '' !== $style_id
+                ? $this->resolve_creation_style_prompt($style_id)
+                : $this->resolve_creation_style_prompt('editorial-guide');
+            $combined_style     = trim($style_prompt . ('' !== $style_instruction ? "\n补充风格要求：" . $style_instruction : ''));
+
+            if ('' === $prompt) {
+                return new WP_Error('aiditor_creation_prompt_required', '请填写创作说明。', array('status' => 400));
+            }
+
+            $response = $this->rewriter->complete_chat(
+                array(
+                    'model'       => (string) $runtime_settings['model'],
+                    'temperature' => isset($runtime_settings['temperature']) ? (float) $runtime_settings['temperature'] : 0.5,
+                    'max_tokens'  => isset($runtime_settings['max_tokens']) ? (int) $runtime_settings['max_tokens'] : 4000,
+                    'messages'    => array(
+                        array(
+                            'role'    => 'system',
+                            'content' => $this->build_creation_system_prompt($combined_style),
+                        ),
+                        array(
+                            'role'    => 'user',
+                            'content' => $this->build_creation_user_prompt($prompt),
+                        ),
+                    ),
+                ),
+                $runtime_settings
+            );
+
+            $article = $this->decode_creation_article($this->rewriter->extract_completion_content($response));
+            $article = $this->sanitize_creation_article($article);
+
+            return rest_ensure_response(
+                array(
+                    'field_schema' => $field_schema,
+                    'article'      => $article,
+                )
+            );
+        } catch (Throwable $exception) {
+            return new WP_Error('aiditor_creation_generate_failed', $exception->getMessage(), array('status' => 400));
+        }
+    }
+
+    public function creation_publish_article(WP_REST_Request $request)
+    {
+        try {
+            $payload         = $this->get_request_payload($request);
+            $generated       = is_array($payload['generated_fields'] ?? null) ? $this->sanitize_creation_article($payload['generated_fields']) : array();
+            $field_schema    = is_array($payload['field_schema'] ?? null) ? $payload['field_schema'] : $this->get_default_creation_field_schema();
+            $publish_fields  = $this->sanitize_string_array($payload['publish_fields'] ?? array());
+            $field_mapping   = is_array($payload['field_mapping'] ?? null) ? $payload['field_mapping'] : array();
+            $post_type       = sanitize_key((string) ($payload['post_type'] ?? 'post'));
+            $post_status     = sanitize_key((string) ($payload['post_status'] ?? $this->get_current_default_post_status()));
+            $target_taxonomy = sanitize_key((string) ($payload['target_taxonomy'] ?? 'category'));
+            $target_term_id  = (int) ($payload['target_term_id'] ?? 0);
+            $extra_tax_terms = is_array($payload['extra_tax_terms'] ?? null) ? $payload['extra_tax_terms'] : array();
+            $author_id       = $this->get_current_admin_author_id();
+            $final_fields    = $this->build_editing_publish_fields($field_schema, $generated, array(), $publish_fields);
+
+            if (empty($final_fields)) {
+                return new WP_Error('aiditor_creation_publish_fields_required', '请先完成创作并保留至少一个可发布字段。', array('status' => 400));
+            }
+
+            $this->taxonomy_browser->validate_selection(
+                array(
+                    'post_type'       => $post_type,
+                    'target_taxonomy' => $target_taxonomy,
+                    'target_term_id'  => $target_term_id,
+                    'extra_tax_terms' => $extra_tax_terms,
+                )
+            );
+
+            $post_id = $this->draft_writer->write_mapped(
+                array(
+                    'field_schema' => $field_schema,
+                    'fields'       => $final_fields,
+                    'context'      => 'creation',
+                ),
+                array(
+                    'source_url'     => (string) ($final_fields['source_url'] ?? ''),
+                    'source_title'   => (string) ($final_fields['title'] ?? ''),
+                    'source_summary' => (string) ($final_fields['summary'] ?? ''),
+                ),
+                array(
+                    'post_type'       => $post_type,
+                    'post_status'     => $post_status,
+                    'target_taxonomy' => $target_taxonomy,
+                    'target_term_id'  => $target_term_id,
+                    'extra_tax_terms' => $extra_tax_terms,
+                    'author_id'       => $author_id,
+                    'creation_media'  => true,
+                    'cover_image_url' => (string) ($generated['cover_image_url'] ?? ''),
+                ),
+                $field_mapping
+            );
+
+            return rest_ensure_response(
+                array(
+                    'post_id'   => $post_id,
+                    'edit_link' => function_exists('get_edit_post_link') ? (string) get_edit_post_link($post_id, 'raw') : '',
+                    'message'   => '创作内容已发布为草稿。',
+                    'fields'    => $final_fields,
+                )
+            );
+        } catch (Throwable $exception) {
+            return new WP_Error('aiditor_creation_publish_failed', $exception->getMessage(), array('status' => 400));
+        }
     }
 
     public function save_template(WP_REST_Request $request)
@@ -1288,12 +1424,189 @@ class AIditor_REST_Controller
                 'description' => '详情页、官网或用户要求采集的主要链接。',
             ),
             array(
+                'key'         => 'cover_image_url',
+                'label'       => '封面图',
+                'type'        => 'image',
+                'required'    => false,
+                'description' => '文章或详情页的主图、封面图、特色图远程 URL。',
+            ),
+            array(
                 'key'         => 'content',
                 'label'       => '正文',
                 'type'        => 'html',
                 'required'    => false,
                 'description' => '页面主要正文内容。不要包含导航、栏目、面包屑、发布时间、阅读量、推荐阅读、评论区或页脚。',
             ),
+        );
+    }
+
+    protected function get_default_creation_field_schema(): array
+    {
+        return array(
+            array(
+                'key'      => 'title',
+                'label'    => '标题',
+                'type'     => 'text',
+                'required' => true,
+            ),
+            array(
+                'key'      => 'summary',
+                'label'    => '摘要',
+                'type'     => 'textarea',
+                'required' => false,
+            ),
+            array(
+                'key'      => 'keywords',
+                'label'    => '关键词',
+                'type'     => 'text',
+                'required' => false,
+            ),
+            array(
+                'key'      => 'content',
+                'label'    => '正文',
+                'type'     => 'html',
+                'required' => true,
+            ),
+            array(
+                'key'      => 'cover_image_url',
+                'label'    => '封面图链接',
+                'type'     => 'url',
+                'required' => false,
+            ),
+            array(
+                'key'      => 'source_url',
+                'label'    => '参考来源链接',
+                'type'     => 'url',
+                'required' => false,
+            ),
+        );
+    }
+
+    protected function build_creation_system_prompt(string $style_prompt): string
+    {
+        return implode(
+            "\n",
+            array(
+                '你是中文网站内容主编，需要根据用户提供的创作说明输出一篇可直接发布到 WordPress 的原创文章。',
+                '只输出 JSON，不要输出 markdown 代码块、额外解释或前后缀。',
+                'JSON 字段必须包含：title、summary、keywords、content_html、cover_image_url、inline_images、source_url。',
+                'title：简洁明确的中文标题。',
+                'summary：120 字以内中文摘要。',
+                'keywords：3 到 8 个关键词，使用数组返回。',
+                'content_html：完整 HTML 正文，使用 <h2>、<p>、<ul>、<ol>、<blockquote>、<figure>、<img> 等安全标签组织内容。',
+                '不要在 content_html 开头重复输出标题，不要再写与 title 字段相同或近似的主标题、<h1> 或首段标题。正文必须直接从导语或正文段落开始。',
+                'cover_image_url：如果适合配图则返回一个远程图片 URL，否则返回空字符串。',
+                'inline_images：返回数组，每项包含 url 和 caption；没有则返回空数组。',
+                'source_url：如果文中明确引用某个公开来源则返回其 URL，否则返回空字符串。',
+                '不要返回虚构统计数据、伪造引用或不存在的链接。无法确认时宁可留空。',
+                '正文需具备自然小标题和完整段落，不要只写提纲。',
+                '风格要求：' . $style_prompt,
+            )
+        );
+    }
+
+    protected function build_creation_user_prompt(string $prompt): string
+    {
+        return implode(
+            "\n\n",
+            array(
+                '创作任务：' . $prompt,
+                '请输出一篇适合中文网站发布的完整文章，并严格返回指定 JSON 结构。',
+            )
+        );
+    }
+
+    protected function resolve_creation_style_prompt(string $style_id): string
+    {
+        if ($this->article_styles instanceof AIditor_Article_Style_Repository) {
+            $style = $this->article_styles->get($style_id);
+            if (is_array($style) && '' !== trim((string) ($style['prompt'] ?? ''))) {
+                return trim((string) ($style['prompt'] ?? ''));
+            }
+        }
+
+        return '像专业中文编辑一样写作：自然、克制、结构清晰、信息密度高，避免营销腔和模板句。';
+    }
+
+    protected function decode_creation_article(string $content): array
+    {
+        $content = trim($content);
+
+        if (preg_match('/```(?:json)?\s*(\{.*\})\s*```/s', $content, $matches)) {
+            $content = $matches[1];
+        }
+
+        $decoded = json_decode($content, true);
+        if (is_array($decoded)) {
+            return $decoded;
+        }
+
+        if (preg_match('/\{[\s\S]*\}/', $content, $matches)) {
+            $decoded = json_decode($matches[0], true);
+            if (is_array($decoded)) {
+                return $decoded;
+            }
+        }
+
+        throw new RuntimeException('AI 创作结果不是有效的 JSON 对象。');
+    }
+
+    protected function sanitize_creation_article(array $article): array
+    {
+        $title        = sanitize_text_field((string) ($article['title'] ?? ''));
+        $content_html = function_exists('wp_kses_post') ? wp_kses_post((string) ($article['content_html'] ?? '')) : (string) ($article['content_html'] ?? '');
+        $content_html = AIditor_Content_Normalizer::strip_leading_title_heading($content_html, $title);
+        $content_html = trim($content_html);
+        $keywords     = $article['keywords'] ?? array();
+        $inline_images = $article['inline_images'] ?? array();
+
+        if (! is_array($keywords)) {
+            $keywords = $this->sanitize_string_array(preg_split('/[\r\n,，]+/u', (string) $keywords) ?: array());
+        } else {
+            $keywords = $this->sanitize_string_array($keywords);
+        }
+
+        if (! is_array($inline_images)) {
+            $inline_images = array();
+        }
+
+        $inline_images = array_values(
+            array_filter(
+                array_map(
+                    static function ($item): ?array {
+                        if (is_string($item)) {
+                            $url = esc_url_raw(trim($item));
+                            return '' !== $url ? array('url' => $url, 'caption' => '') : null;
+                        }
+
+                        if (! is_array($item)) {
+                            return null;
+                        }
+
+                        $url = esc_url_raw(trim((string) ($item['url'] ?? '')));
+                        if ('' === $url) {
+                            return null;
+                        }
+
+                        return array(
+                            'url'     => $url,
+                            'caption' => sanitize_text_field((string) ($item['caption'] ?? '')),
+                        );
+                    },
+                    $inline_images
+                )
+            )
+        );
+
+        return array(
+            'title'           => $title,
+            'summary'         => sanitize_textarea_field((string) ($article['summary'] ?? '')),
+            'keywords'        => $keywords,
+            'content_html'    => $content_html,
+            'content'         => $content_html,
+            'cover_image_url' => esc_url_raw(trim((string) ($article['cover_image_url'] ?? ''))),
+            'inline_images'   => $inline_images,
+            'source_url'      => esc_url_raw(trim((string) ($article['source_url'] ?? ''))),
         );
     }
 
@@ -1362,7 +1675,7 @@ class AIditor_REST_Controller
                 continue;
             }
 
-            if ('source_url' === $key || 'date' === $key) {
+            if ('source_url' === $key || 'date' === $key || 'author' === $key) {
                 continue;
             }
 

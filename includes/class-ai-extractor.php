@@ -115,6 +115,7 @@ class AIditor_AI_Extractor
                 '如果字段找不到，返回空字符串、空数组或 null，并在 confidence 中降低置信度。',
                 '返回严格 JSON 对象，不要使用 Markdown 代码块，不要解释过程。',
                 'URL 字段必须返回绝对 URL。',
+                'image、cover_image_url、thumbnail 或 featured_image 字段必须返回远程图片绝对 URL，不要返回 HTML 或 Markdown。',
                 '抽取 content 或 body 字段时，只能返回网页正文主体，不要包含站点导航、页眉、页脚、面包屑、栏目名、发布时间、阅读量、分享按钮、相关推荐、上一篇/下一篇、评论区或广告文本。',
                 'content 字段不要重复标题；标题请只放在 title 字段。',
             )
@@ -153,7 +154,7 @@ class AIditor_AI_Extractor
                 '用户采集需求：' . trim($instruction),
                 '目标字段定义：' . (string) $json_encode($field_schema, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
                 '页面证据：' . (string) $json_encode($evidence, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-                '字段规则：title 只返回页面主标题；summary 只返回摘要；url 返回用户要求的主要网址；content 只返回正文主体，优先依据 main_text 和 content_candidates，不得把菜单、导航、栏目、发布时间、阅读量等页面框架文本写入 content。',
+                '字段规则：title 只返回页面主标题；summary 只返回摘要；url 返回用户要求的主要网址；cover_image_url 返回文章主图、封面图、特色图或 og:image 的远程绝对 URL；content 只返回正文主体，优先依据 main_text 和 content_candidates，不得把菜单、导航、栏目、发布时间、阅读量等页面框架文本写入 content。',
                 '请返回一个 JSON 对象。对象字段必须尽量与目标字段 key 对齐，可额外返回 confidence、notes、missing_fields。',
             )
         );
