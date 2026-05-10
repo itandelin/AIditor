@@ -57,45 +57,21 @@ class AIditor_Image_Generator
             'Authorization' => 'Bearer ' . trim((string) $settings['image_api_key']),
             'Content-Type'  => 'application/json',
         );
-        $timeout = $this->normalize_image_timeout($settings['image_request_timeout'] ?? 60);
 
         if ($retry_only) {
             if ('' === $task_id) {
                 throw new RuntimeException('缺少可恢复的封面任务编号，请先点击“一键生成封面图”。');
             }
 
-            $response = $this->recover_cover_via_async_task($payload, $headers, $settings, $task_id, false);
-        } else {
             try {
-                $response = $this->post_json(
-                    $this->build_endpoint((string) $settings['image_base_url']),
-                    $payload,
-                    $headers,
-                    $timeout
-                );
-            } catch (Throwable $exception) {
-                if (! $this->is_retryable_exception($exception)) {
-                    throw $exception;
-                }
-
-                $response = $this->recover_cover_after_gateway_error($exception, $payload, $headers, $settings, $task_id);
+                $response = $this->recover_cover_via_async_task($payload, $headers, $settings, $task_id, false);
+            } catch (Throwable $retry_exception) {
+                // “重试生成封面图”优先恢复既有任务；如果内部异步任务不存在或接口不稳定，
+                // 回退到公开的同步生图接口，避免把可重试场景直接打成 500。
+                $response = $this->generate_cover_via_sync_flow($payload, $headers, $settings, $task_id);
             }
-
-            if ($this->should_fallback_to_async_task($response)) {
-                try {
-                    $response = $this->recover_cover_via_async_task($payload, $headers, $settings, $task_id, true);
-                } catch (Throwable $fallback_exception) {
-                    $this->last_cover_task_pending = true;
-                    $upstream_message = trim((string) ($response['message'] ?? ''));
-                    $message = '生图请求超时，自动补偿未成功，请稍后点击“重试生成封面图”。';
-
-                    if ('' !== $upstream_message) {
-                        $message .= ' 上游返回：' . $upstream_message;
-                    }
-
-                    throw new RuntimeException($message, 504);
-                }
-            }
+        } else {
+            $response = $this->generate_cover_via_sync_flow($payload, $headers, $settings, $task_id);
         }
 
         $image_url = $this->extract_image_url($response);
@@ -561,6 +537,46 @@ class AIditor_Image_Generator
             || false !== strpos($message, '状态码为 504');
     }
 
+    protected function generate_cover_via_sync_flow(
+        array $payload,
+        array $headers,
+        array $settings,
+        string $task_id = ''
+    ): array {
+        try {
+            $response = $this->post_json(
+                $this->build_endpoint((string) $settings['image_base_url']),
+                $payload,
+                $headers,
+                $this->normalize_image_timeout($settings['image_request_timeout'] ?? 60)
+            );
+        } catch (Throwable $exception) {
+            if (! $this->is_retryable_exception($exception)) {
+                throw $exception;
+            }
+
+            $response = $this->recover_cover_after_gateway_error($exception, $payload, $headers, $settings, $task_id);
+        }
+
+        if (! $this->should_fallback_to_async_task($response)) {
+            return $response;
+        }
+
+        try {
+            return $this->recover_cover_via_async_task($payload, $headers, $settings, $task_id, true);
+        } catch (Throwable $fallback_exception) {
+            $this->last_cover_task_pending = true;
+            $upstream_message = trim((string) ($response['message'] ?? ''));
+            $message = '生图请求超时，自动补偿未成功，请稍后点击“重试生成封面图”。';
+
+            if ('' !== $upstream_message) {
+                $message .= ' 上游返回：' . $upstream_message;
+            }
+
+            throw new RuntimeException($message, 504);
+        }
+    }
+
     protected function recover_cover_after_gateway_error(
         Throwable $exception,
         array $payload,
@@ -665,13 +681,8 @@ class AIditor_Image_Generator
             }
 
             if ('' === $status && ! $create_if_missing) {
-                // 重试模式下查不到任务时，回退到创建任务再轮询，
-                // 避免因任务被清理或首次创建失败导致永久报错。
-                $this->create_image_task($base_url, $payload, $headers, $task_request_timeout, $task_id);
-                $create_if_missing = true;
-                $task_created = true;
-                $this->pause_before_retry(1);
-                continue;
+                $last_error = '未找到对应任务';
+                break;
             }
 
             $this->pause_before_retry(self::ASYNC_TASK_POLL_INTERVAL_SECONDS);
