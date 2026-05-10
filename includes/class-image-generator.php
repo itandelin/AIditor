@@ -11,7 +11,7 @@ class AIditor_Image_Generator
 
     protected const ASYNC_TASK_POLL_INTERVAL_SECONDS = 2;
 
-    protected const ASYNC_TASK_POLL_MAX_SECONDS = 70;
+    protected const ASYNC_TASK_POLL_MAX_SECONDS = 120;
 
     protected const ASYNC_TASK_REQUEST_TIMEOUT_SECONDS = 20;
 
@@ -574,6 +574,21 @@ class AIditor_Image_Generator
             throw $exception;
         }
 
+        // 同步请求超时后，先等待几秒让上游完成处理，然后重试一次同步请求。
+        // 上游可能已经生成了图片但响应在传输过程中超时（如用户描述的 524 场景）。
+        $this->pause_before_retry(3);
+
+        try {
+            return $this->post_json(
+                $this->build_endpoint((string) $settings['image_base_url']),
+                $payload,
+                $headers,
+                $this->normalize_image_timeout($settings['image_request_timeout'] ?? 60)
+            );
+        } catch (Throwable $retry_exception) {
+            // 重试仍然失败，走异步补偿路径。
+        }
+
         try {
             return $this->recover_cover_via_async_task($payload, $headers, $settings, $task_id, true);
         } catch (Throwable $fallback_exception) {
@@ -613,12 +628,17 @@ class AIditor_Image_Generator
         $deadline = time() + self::ASYNC_TASK_POLL_MAX_SECONDS;
         $last_status = '';
         $last_error = '';
+        $last_diagnostic = '';
 
         while (time() <= $deadline) {
             $result = $this->fetch_image_task_status($base_url, $task_id, $headers, $task_request_timeout);
             $item = $result['item'];
             $status = $result['status'];
             $last_status = $status;
+            $diagnostic = trim((string) ($result['diagnostic'] ?? ''));
+            if ('' !== $diagnostic) {
+                $last_diagnostic = $diagnostic;
+            }
 
             if ('success' === $status) {
                 $data = is_array($item['data'] ?? null) ? $item['data'] : array();
@@ -645,8 +665,13 @@ class AIditor_Image_Generator
             }
 
             if ('' === $status && ! $create_if_missing) {
-                $last_error = '未找到对应任务';
-                break;
+                // 重试模式下查不到任务时，回退到创建任务再轮询，
+                // 避免因任务被清理或首次创建失败导致永久报错。
+                $this->create_image_task($base_url, $payload, $headers, $task_request_timeout, $task_id);
+                $create_if_missing = true;
+                $task_created = true;
+                $this->pause_before_retry(1);
+                continue;
             }
 
             $this->pause_before_retry(self::ASYNC_TASK_POLL_INTERVAL_SECONDS);
@@ -661,6 +686,10 @@ class AIditor_Image_Generator
 
         if ('' !== $last_error) {
             $detail .= ' 上游返回：' . $last_error;
+        }
+
+        if ('' !== $last_diagnostic) {
+            $detail .= $last_diagnostic;
         }
 
         $detail .= ' 任务编号：' . $task_id . '。';
@@ -684,7 +713,16 @@ class AIditor_Image_Generator
             $task_payload['size'] = (string) $payload['size'];
         }
 
-        $this->post_json_no_retry($task_endpoint, $task_payload, $headers, $timeout);
+        $result = $this->post_json_no_retry($task_endpoint, $task_payload, $headers, $timeout);
+
+        // 检查上游返回的任务状态，如果是 error 则提前抛出异常，避免后续空轮询。
+        $task_status = strtolower(trim((string) ($result['status'] ?? '')));
+        if ('error' === $task_status) {
+            $error_message = trim((string) ($result['error'] ?? ''));
+            throw new RuntimeException(
+                '封面图任务创建失败：' . ('' !== $error_message ? $error_message : '上游返回错误状态。')
+            );
+        }
     }
 
     protected function build_image_task_generation_endpoint(string $base_url): string
@@ -769,9 +807,17 @@ class AIditor_Image_Generator
         $items = $response['items'] ?? null;
 
         if (! is_array($items) || empty($items) || ! is_array($items[0] ?? null)) {
+            // 上游返回了 missing_ids 时，记录诊断信息便于排查。
+            $missing_ids = $response['missing_ids'] ?? array();
+            $diagnostic = '';
+            if (is_array($missing_ids) && ! empty($missing_ids)) {
+                $diagnostic = ' 上游标记缺失：' . implode(', ', $missing_ids);
+            }
+
             return array(
                 'status' => '',
                 'item'   => array(),
+                'diagnostic' => $diagnostic,
             );
         }
 
