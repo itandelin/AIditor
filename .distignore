@@ -30,6 +30,8 @@ scripts
 _dist
 dist
 build
+AGENTS.md
+CLAUDE.md
 *.zip
 *.tar
 *.tar.gz
