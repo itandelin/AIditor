@@ -26,7 +26,12 @@
             fieldSchema: [],
             fieldMapping: [],
             targetConfig: null,
-            publishSelection: []
+            publishSelection: [],
+            generatedCover: '',
+            applyFeaturedImage: false,
+            coverRatio: '4:3',
+            lastCoverTaskId: '',
+            lastCoverPayload: null
         },
         editing: {
             page: null,
@@ -40,7 +45,12 @@
             rewriteSelection: [],
             publishSelection: [],
             fieldMapping: [],
-            targetConfig: null
+            targetConfig: null,
+            generatedCover: '',
+            applyFeaturedImage: false,
+            coverRatio: '4:3',
+            lastCoverTaskId: '',
+            lastCoverPayload: null
         }
     };
 
@@ -246,12 +256,234 @@
             return response.json().then(function (data) {
                 if (!response.ok) {
                     var message = (data && data.message) || '请求失败。';
-                    throw new Error(message);
+                    var error = new Error(message);
+                    error.code = data && data.code ? data.code : '';
+                    error.data = data && data.data ? data.data : {};
+                    error.status = response.status;
+                    throw error;
                 }
 
                 return data;
             });
         });
+    }
+
+    function renderCoverPreview(selector, imageUrl) {
+        var container = $(selector);
+
+        if (!container) {
+            return;
+        }
+
+        if (!imageUrl) {
+            container.innerHTML = '<p class="description">生成后，这里会显示封面图预览。</p>';
+            return;
+        }
+
+        container.innerHTML = '<figure><img src="' + escapeHtml(imageUrl) + '" alt="封面图预览" loading="lazy" /><figcaption>' + escapeHtml(imageUrl) + '</figcaption></figure>';
+    }
+
+    function getSelectedCoverRatio(context) {
+        var selector = context === 'creation'
+            ? '#aiditor-creation-cover-ratio'
+            : '#aiditor-editing-cover-ratio';
+        var select = $(selector);
+        var fallback = context === 'creation' ? state.creation.coverRatio : state.editing.coverRatio;
+
+        return select && select.value ? select.value : fallback;
+    }
+
+    function buildCoverGeneratePayload(context) {
+        var requestId = createCoverRequestId(context);
+
+        if (context === 'creation') {
+            return {
+                context: 'creation',
+                title: state.creation.result && state.creation.result.title ? state.creation.result.title : '',
+                summary: state.creation.result && state.creation.result.summary ? state.creation.result.summary : '',
+                keywords: state.creation.result && state.creation.result.keywords ? state.creation.result.keywords : '',
+                content: state.creation.result && state.creation.result.content_html ? state.creation.result.content_html : '',
+                ratio: getSelectedCoverRatio('creation'),
+                cover_request_id: requestId,
+                retry_only: false
+            };
+        }
+
+        return {
+            context: 'editing',
+            title: getEditingFieldValue('title'),
+            summary: getEditingFieldValue('summary'),
+            keywords: getEditingFieldValue('keywords'),
+            content: getEditingFieldValue('content'),
+            source_url: getEditingFieldValue('source_url'),
+            ratio: getSelectedCoverRatio('editing'),
+            cover_request_id: requestId,
+            retry_only: false
+        };
+    }
+
+    function createCoverRequestId(context) {
+        var prefix = context === 'creation' ? 'creation' : 'editing';
+        var random = Math.random().toString(36).slice(2, 8);
+
+        return 'aiditor-' + prefix + '-' + Date.now().toString(36) + '-' + random;
+    }
+
+    function cacheCoverPayload(context, payload) {
+        var normalizedPayload = payload && typeof payload === 'object'
+            ? Object.assign({}, payload)
+            : null;
+
+        if (!normalizedPayload) {
+            return;
+        }
+
+        if (context === 'creation') {
+            state.creation.lastCoverPayload = normalizedPayload;
+            return;
+        }
+
+        state.editing.lastCoverPayload = normalizedPayload;
+    }
+
+    function getCachedCoverPayload(context) {
+        if (context === 'creation') {
+            return state.creation.lastCoverPayload ? Object.assign({}, state.creation.lastCoverPayload) : null;
+        }
+
+        return state.editing.lastCoverPayload ? Object.assign({}, state.editing.lastCoverPayload) : null;
+    }
+
+    function resetCoverRetryState(context) {
+        if (context === 'creation') {
+            state.creation.lastCoverTaskId = '';
+            state.creation.lastCoverPayload = null;
+            return;
+        }
+
+        state.editing.lastCoverTaskId = '';
+        state.editing.lastCoverPayload = null;
+    }
+
+    function applyGeneratedCover(context, data) {
+        var imageUrl = (data && data.image_url) ? data.image_url : '';
+
+        if (context === 'creation') {
+            state.creation.generatedCover = imageUrl;
+            state.creation.applyFeaturedImage = !!imageUrl;
+            renderCoverPreview('#aiditor-creation-cover-preview', state.creation.generatedCover);
+            if ($('#aiditor-creation-apply-featured-image')) {
+                $('#aiditor-creation-apply-featured-image').checked = !!state.creation.applyFeaturedImage;
+            }
+
+            return;
+        }
+
+        state.editing.generatedCover = imageUrl;
+        state.editing.applyFeaturedImage = !!imageUrl;
+        renderCoverPreview('#aiditor-editing-cover-preview', state.editing.generatedCover);
+        if ($('#aiditor-editing-apply-featured-image')) {
+            $('#aiditor-editing-apply-featured-image').checked = !!state.editing.applyFeaturedImage;
+        }
+    }
+
+    function generateCoverWithPayload(context, payload, notice) {
+        cacheCoverPayload(context, payload);
+        setNotice(notice, '正在生成封面图…', 'success');
+
+        return api('cover-image/generate', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        }).then(function (data) {
+            applyGeneratedCover(context, data || {});
+            setNotice(notice, (data && data.message) || '封面图生成成功。', 'success');
+            return data;
+        }).catch(function (error) {
+            var message = error && error.message ? error.message : '封面图生成失败。';
+            var coverTaskId = readCoverTaskId(error);
+
+            if (coverTaskId) {
+                applyRetryCoverTask(context, payload, coverTaskId);
+            }
+
+            if (isGatewayTimeoutMessage(message)) {
+                setNotice(notice, message + ' 上游可能仍在后台生成，请等待几秒后点击“重试生成封面图”。', 'error');
+            } else {
+                setNotice(notice, message + ' 如提示 524/502/503/504，可点击“重试生成封面图”。', 'error');
+            }
+            throw error;
+        });
+    }
+
+    function retryCachedCoverGeneration(context, notice) {
+        var payload = getCachedCoverPayload(context);
+
+        if (!payload) {
+            setNotice(notice, '暂无可重试请求，请先点击“一键生成封面图”。', 'error');
+            return Promise.resolve(null);
+        }
+
+        payload.retry_only = true;
+        if (!payload.cover_task_id) {
+            payload.cover_task_id = getCoverTaskId(context);
+        }
+        cacheCoverPayload(context, payload);
+
+        return generateCoverWithPayload(context, payload, notice).catch(function () {
+            return null;
+        });
+    }
+
+    function isGatewayTimeoutMessage(message) {
+        var text = String(message || '').toLowerCase();
+
+        return text.indexOf('524') !== -1
+            || text.indexOf('504') !== -1
+            || text.indexOf('gateway timeout') !== -1
+            || text.indexOf('超时') !== -1;
+    }
+
+    function readCoverTaskId(error) {
+        var taskId = error && error.data && error.data.cover_task_id ? String(error.data.cover_task_id).trim() : '';
+
+        if (taskId) {
+            return taskId;
+        }
+
+        taskId = String(error && error.message ? error.message : '').match(/任务编号[:：]\s*([A-Za-z0-9_-]{6,})/);
+        return taskId && taskId[1] ? taskId[1] : '';
+    }
+
+    function getCoverTaskId(context) {
+        return context === 'creation'
+            ? String(state.creation.lastCoverTaskId || '')
+            : String(state.editing.lastCoverTaskId || '');
+    }
+
+    function applyRetryCoverTask(context, payload, coverTaskId) {
+        if (context === 'creation') {
+            state.creation.lastCoverTaskId = coverTaskId;
+        } else {
+            state.editing.lastCoverTaskId = coverTaskId;
+        }
+
+        if (payload && typeof payload === 'object') {
+            payload.cover_task_id = coverTaskId;
+            payload.retry_only = true;
+            cacheCoverPayload(context, payload);
+        }
+    }
+
+    function getEditingFieldValue(key) {
+        var normalizedKey = sanitizeFieldKey(key);
+        var rewritten = state.editing.rewrittenFields || {};
+        var extracted = state.editing.extractedFields || {};
+
+        if (rewritten[normalizedKey] !== undefined && rewritten[normalizedKey] !== null && rewritten[normalizedKey] !== '') {
+            return rewritten[normalizedKey];
+        }
+
+        return extracted[normalizedKey] || '';
     }
 
     function getPollIntervalMs() {
@@ -766,6 +998,82 @@
         });
     }
 
+    function populateImageModelOptions(models, selected) {
+        var select = $('#aiditor-image-model');
+        var options = ['<option value="">请选择生图模型</option>'];
+        var normalized = Array.isArray(models) ? models : [];
+        var seen = {};
+
+        if (!select) {
+            return;
+        }
+
+        normalized.forEach(function (model) {
+            var id = String((model && model.id) || '').trim();
+            var label = String((model && (model.label || model.id)) || '').trim();
+
+            if (!id || seen[id]) {
+                return;
+            }
+
+            seen[id] = true;
+            options.push('<option value="' + escapeHtml(id) + '">' + escapeHtml(label || id) + '</option>');
+        });
+
+        select.innerHTML = options.join('');
+
+        if (selected && seen[selected]) {
+            select.value = selected;
+            return;
+        }
+
+        select.value = '';
+    }
+
+    function fetchImageModels(notice, button) {
+        var payload = {
+            image_base_url: $('#aiditor-image-base-url') ? $('#aiditor-image-base-url').value.trim() : '',
+            image_api_key: $('#aiditor-image-api-key') ? $('#aiditor-image-api-key').value.trim() : '',
+            image_request_timeout: $('#aiditor-image-request-timeout') ? $('#aiditor-image-request-timeout').value : 60
+        };
+        var originalText = button ? button.textContent : '';
+
+        if (!payload.image_base_url) {
+            setNotice(notice, '请先填写生图接口地址。', 'error');
+            return Promise.reject(new Error('请先填写生图接口地址。'));
+        }
+
+        if (!payload.image_api_key && !getCurrentSettings().image_api_key_configured) {
+            setNotice(notice, '请先填写生图 API 密钥。', 'error');
+            return Promise.reject(new Error('请先填写生图 API 密钥。'));
+        }
+
+        if (button) {
+            button.disabled = true;
+            button.textContent = '获取中…';
+        }
+
+        setNotice(notice, '正在获取生图模型列表…', 'success');
+
+        return api('settings/image-models', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        }).then(function (data) {
+            var selected = $('#aiditor-image-model') ? $('#aiditor-image-model').value : '';
+            populateImageModelOptions(data.models || [], selected);
+            setNotice(notice, data.message || '模型已获取。', 'success');
+            return data;
+        }).catch(function (error) {
+            setNotice(notice, error.message, 'error');
+            throw error;
+        }).finally(function () {
+            if (button) {
+                button.disabled = false;
+                button.textContent = originalText || '获取模型列表';
+            }
+        });
+    }
+
     function populateSettings(settings) {
         if (!settings) {
             return;
@@ -778,15 +1086,30 @@
             queue_poll_interval: '#aiditor-queue-poll-interval',
             log_retention_days: '#aiditor-log-retention-days',
             default_post_status: '#aiditor-default-status',
-            default_article_style: '#aiditor-default-style'
+            default_article_style: '#aiditor-default-style',
+            image_base_url: '#aiditor-image-base-url',
+            image_model: '#aiditor-image-model',
+            image_request_timeout: '#aiditor-image-request-timeout'
         };
 
         Object.keys(fieldMap).forEach(function (key) {
             var element = $(fieldMap[key]);
-            if (element && settings[key] !== undefined) {
+            if (element && settings[key] !== undefined && key !== 'image_model') {
                 element.value = settings[key];
             }
         });
+
+        if ($('#aiditor-image-generation-enabled')) {
+            $('#aiditor-image-generation-enabled').checked = !!Number(settings.image_generation_enabled || 0);
+        }
+
+        if ($('#aiditor-image-api-key-hint')) {
+            $('#aiditor-image-api-key-hint').textContent = settings.image_api_key_configured
+                ? '已保存密钥：' + (settings.image_api_key_masked || '') + '；留空则继续使用已保存密钥。'
+                : '当前未保存生图 API 密钥。';
+        }
+
+        populateImageModelOptions([], settings.image_model || '');
 
         state.modelProfiles = getModelProfilesFromSettings(settings);
         renderModelProfiles(settings.default_model_profile_id || '');
@@ -1449,7 +1772,10 @@
                 return;
             }
 
-            panels = $all(':scope > [data-tab-panel]', panelRoot);
+            panels = Array.prototype.filter.call(panelRoot.children, function (child) {
+                return child.hasAttribute('data-tab-panel');
+            });
+
             if (!panels.length) {
                 panels = $all('[data-tab-panel]', panelRoot);
             }
@@ -1883,7 +2209,10 @@
 
     function initSettings() {
         var form = $('#aiditor-settings-form');
+        var imageForm = $('#aiditor-image-settings-form');
+        var imageFetchButton = $('#aiditor-fetch-image-models');
         var notice = $('#aiditor-settings-notice');
+        var imageNotice = $('#aiditor-image-settings-notice') || notice;
         var styleNotice = $('#aiditor-style-notice') || notice;
 
         initTabs();
@@ -1899,6 +2228,20 @@
             event.preventDefault();
             saveSettingsForm(form, notice, '正在保存设置…', '设置已保存。').catch(function () {});
         });
+
+        if (imageForm) {
+            imageForm.addEventListener('submit', function (event) {
+                event.preventDefault();
+                saveSettingsForm(imageForm, imageNotice, '正在保存生图设置…', '生图设置已保存。').catch(function () {});
+            });
+        }
+
+        if (imageFetchButton) {
+            imageFetchButton.textContent = '获取模型列表 [debug-v2]';
+            imageFetchButton.addEventListener('click', function () {
+                fetchImageModels(imageNotice, imageFetchButton).catch(function () {});
+            });
+        }
     }
 
     function clearArticleStyleEditor() {
@@ -2834,6 +3177,9 @@
 
     function ensureCreationDefaults() {
         if (state.creation.fieldSchema && state.creation.fieldSchema.length) {
+            if (!state.creation.lastCoverPayload || typeof state.creation.lastCoverPayload !== 'object') {
+                state.creation.lastCoverPayload = null;
+            }
             return;
         }
 
@@ -2845,6 +3191,10 @@
             {key: 'cover_image_url', label: '封面图链接', type: 'url'}
         ];
         state.creation.fieldMapping = buildDefaultEditingMapping(state.creation.fieldSchema, getCreationTargetConfig());
+
+        if (!state.creation.lastCoverPayload || typeof state.creation.lastCoverPayload !== 'object') {
+            state.creation.lastCoverPayload = null;
+        }
     }
 
     function getCreationFieldSchemaMap() {
@@ -3006,7 +3356,9 @@
             post_status: $('#aiditor-creation-post-status') ? $('#aiditor-creation-post-status').value : 'draft',
             target_taxonomy: getSelectedCreationTargetTaxonomy(),
             target_term_id: getSelectedCreationTargetTermId(),
-            extra_tax_terms: extraTaxTerms
+            extra_tax_terms: extraTaxTerms,
+            cover_image_url: state.creation.generatedCover || ((state.creation.result && state.creation.result.cover_image_url) ? state.creation.result.cover_image_url : ''),
+            apply_featured_image: !!state.creation.applyFeaturedImage
         };
     }
 
@@ -3081,6 +3433,8 @@
 
     function initCreationPage() {
         var generateButton = $('#aiditor-creation-generate-button');
+        var generateCoverButton = $('#aiditor-creation-generate-cover-button');
+        var retryCoverButton = $('#aiditor-creation-retry-cover-button');
         var publishButton = $('#aiditor-creation-publish-button');
         var form = $('#aiditor-creation-form');
         var postTypeSelect = $('#aiditor-creation-post-type');
@@ -3095,6 +3449,10 @@
 
         ensureCreationDefaults();
         renderCreationResult();
+        renderCoverPreview('#aiditor-creation-cover-preview', state.creation.generatedCover || '');
+        if ($('#aiditor-creation-apply-featured-image')) {
+            $('#aiditor-creation-apply-featured-image').checked = !!state.creation.applyFeaturedImage;
+        }
         renderCreationFieldMapping();
         bindCreationFieldEvents();
         renderArticleStyleOptions(state.articleStyles, '', '#aiditor-creation-style-preset');
@@ -3134,6 +3492,9 @@
                     body: JSON.stringify(payload)
                 }).then(function (data) {
                     state.creation.result = data.article || null;
+                    state.creation.generatedCover = '';
+                    state.creation.applyFeaturedImage = false;
+                    resetCoverRetryState('creation');
                     state.creation.fieldSchema = data.field_schema || state.creation.fieldSchema;
                     state.creation.fieldMapping = buildDefaultEditingMapping(state.creation.fieldSchema, getCreationTargetConfig());
                     syncCreationSelections();
@@ -3144,6 +3505,32 @@
                 }).catch(function (error) {
                     setNotice(notice, error.message, 'error');
                 });
+            });
+        }
+
+        if (generateCoverButton) {
+            generateCoverButton.addEventListener('click', function () {
+                resetCoverRetryState('creation');
+                var payload = buildCoverGeneratePayload('creation');
+
+                if (!payload.title && !payload.summary && !payload.content) {
+                    setNotice(publishNotice, '请先完成创作，再生成封面图。', 'error');
+                    return;
+                }
+
+                generateCoverWithPayload('creation', payload, publishNotice).catch(function () {});
+            });
+        }
+
+        if (retryCoverButton) {
+            retryCoverButton.addEventListener('click', function () {
+                retryCachedCoverGeneration('creation', publishNotice);
+            });
+        }
+
+        if ($('#aiditor-creation-apply-featured-image')) {
+            $('#aiditor-creation-apply-featured-image').addEventListener('change', function (event) {
+                state.creation.applyFeaturedImage = !!event.target.checked;
             });
         }
 
@@ -3427,6 +3814,7 @@
         state.editing.rewriteSelection = Array.isArray(data.default_rewrite_fields) ? data.default_rewrite_fields.slice() : [];
         state.editing.publishSelection = [];
         state.editing.fieldMapping = buildDefaultEditingMapping(state.editing.fieldSchema, getEditingTargetConfig());
+        state.editing.lastCoverPayload = null;
     }
 
     function buildDefaultEditingMapping(fieldSchema, targetConfig) {
@@ -3693,7 +4081,9 @@
             post_status: $('#aiditor-editing-post-status') ? $('#aiditor-editing-post-status').value : 'draft',
             target_taxonomy: getSelectedEditingTargetTaxonomy(),
             target_term_id: getSelectedEditingTargetTermId(),
-            extra_tax_terms: extraTaxTerms
+            extra_tax_terms: extraTaxTerms,
+            cover_image_url: state.editing.generatedCover || '',
+            apply_featured_image: !!state.editing.applyFeaturedImage
         };
     }
 
@@ -3803,6 +4193,8 @@
     function initEditingPage(config) {
         var extractButton = $('#aiditor-editing-extract-button');
         var rewriteButton = $('#aiditor-editing-rewrite-button');
+        var generateCoverButton = $('#aiditor-editing-generate-cover-button');
+        var retryCoverButton = $('#aiditor-editing-retry-cover-button');
         var publishButton = $('#aiditor-editing-publish-button');
         var postTypeSelect = $('#aiditor-editing-post-type');
         var taxonomySelect = $('#aiditor-editing-target-taxonomy');
@@ -3816,6 +4208,10 @@
         refreshArticleStyles().catch(function () {});
         renderEditingSourceFields();
         renderEditingRewrittenFields();
+        renderCoverPreview('#aiditor-editing-cover-preview', state.editing.generatedCover || '');
+        if ($('#aiditor-editing-apply-featured-image')) {
+            $('#aiditor-editing-apply-featured-image').checked = !!state.editing.applyFeaturedImage;
+        }
         renderEditingFieldMapping();
 
         if (postTypeSelect) {
@@ -3849,6 +4245,9 @@
                     body: JSON.stringify(payload)
                 }).then(function (data) {
                     ensureEditingDefaultsFromExtract(data);
+                    state.editing.generatedCover = '';
+                    state.editing.applyFeaturedImage = false;
+                    resetCoverRetryState('editing');
                     renderEditingSourceFields();
                     renderEditingRewrittenFields();
                     renderEditingFieldMapping();
@@ -3892,6 +4291,32 @@
                 }).catch(function (error) {
                     setNotice(notice, error.message, 'error');
                 });
+            });
+        }
+
+        if (generateCoverButton) {
+            generateCoverButton.addEventListener('click', function () {
+                resetCoverRetryState('editing');
+                var payload = buildCoverGeneratePayload('editing');
+
+                if (!payload.title && !payload.summary && !payload.content) {
+                    setNotice(publishNotice, '请先完成采集或重写，再生成封面图。', 'error');
+                    return;
+                }
+
+                generateCoverWithPayload('editing', payload, publishNotice).catch(function () {});
+            });
+        }
+
+        if (retryCoverButton) {
+            retryCoverButton.addEventListener('click', function () {
+                retryCachedCoverGeneration('editing', publishNotice);
+            });
+        }
+
+        if ($('#aiditor-editing-apply-featured-image')) {
+            $('#aiditor-editing-apply-featured-image').addEventListener('change', function (event) {
+                state.editing.applyFeaturedImage = !!event.target.checked;
             });
         }
 

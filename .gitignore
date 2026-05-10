@@ -40,3 +40,5 @@ vendor/
 .cache/
 .phpunit.result.cache
 coverage/
+AGENTS.md
+CLAUDE.md

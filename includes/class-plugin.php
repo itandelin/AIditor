@@ -35,6 +35,8 @@ class AIditor_Plugin
 
     protected AIditor_AI_Extractor $ai_extractor;
 
+    protected AIditor_Image_Generator $image_generator;
+
     protected AIditor_Draft_Writer $draft_writer;
 
     protected AIditor_Queue_Worker $queue_worker;
@@ -60,6 +62,7 @@ class AIditor_Plugin
         $this->taxonomy_browser = new AIditor_Taxonomy_Browser();
         $this->rewriter         = new AIditor_AI_Rewriter($this->settings, $this->article_styles);
         $this->ai_extractor     = new AIditor_AI_Extractor($this->settings, $this->rewriter);
+        $this->image_generator  = new AIditor_Image_Generator($this->settings);
         $this->draft_writer     = new AIditor_Draft_Writer($this->settings);
         $this->queue_worker     = new AIditor_Queue_Worker(
             $this->runs,
@@ -89,6 +92,7 @@ class AIditor_Plugin
             $this->taxonomy_browser,
             $this->rewriter,
             $this->ai_extractor,
+            $this->image_generator,
             $this->draft_writer,
             $this->queue_worker
         );

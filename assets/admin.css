@@ -8,6 +8,41 @@
     margin-top: 24px;
 }
 
+.aiditor-cover-preview {
+    border: 1px dashed rgba(102, 112, 133, 0.35);
+    border-radius: 10px;
+    min-height: 120px;
+    padding: 12px;
+}
+
+.aiditor-cover-image-block .aiditor-field {
+    max-width: 280px;
+}
+
+.aiditor-cover-preview img {
+    border-radius: 8px;
+    display: block;
+    height: auto;
+    max-width: 320px;
+}
+
+.aiditor-cover-preview figure {
+    margin: 0;
+}
+
+.aiditor-cover-preview figcaption {
+    color: var(--aiditor-muted);
+    font-size: 12px;
+    margin-top: 8px;
+    word-break: break-all;
+}
+
+.aiditor-field-checkbox label {
+    align-items: center;
+    display: inline-flex;
+    gap: 8px;
+}
+
 .aiditor-admin .aiditor-tabs {
     margin: 16px 0 0;
 }

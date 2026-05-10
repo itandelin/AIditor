@@ -17,6 +17,11 @@ class AIditor_Settings
             'request_timeout'       => 60,
             'default_model_profile_id' => '',
             'model_profiles'        => array(),
+            'image_generation_enabled' => 0,
+            'image_base_url'        => '',
+            'image_api_key'         => '',
+            'image_model'           => '',
+            'image_request_timeout' => 60,
             'queue_batch_size'      => 10,
             'queue_time_limit'      => 40,
             'queue_concurrency'     => 4,
@@ -68,6 +73,9 @@ class AIditor_Settings
         $settings['api_key_masked']   = self::mask_api_key((string) $settings['api_key']);
         $settings['api_key_configured'] = '' !== trim((string) $settings['api_key']);
         $settings['api_key']          = '';
+        $settings['image_api_key_masked'] = self::mask_api_key((string) $settings['image_api_key']);
+        $settings['image_api_key_configured'] = '' !== trim((string) $settings['image_api_key']);
+        $settings['image_api_key']    = '';
         $settings['model_profiles']   = $this->get_public_model_profiles((array) ($settings['model_profiles'] ?? array()));
 
         return $settings;
@@ -172,6 +180,19 @@ class AIditor_Settings
             $timeout     = (int) $defaults['request_timeout'];
         }
 
+        $image_generation_enabled = ! empty($input['image_generation_enabled']) ? 1 : 0;
+        $image_base_url = isset($input['image_base_url']) ? trim((string) $input['image_base_url']) : (string) $existing['image_base_url'];
+        $image_base_url = '' !== $image_base_url ? rtrim($image_base_url, '/') : '';
+
+        $image_api_key = isset($input['image_api_key']) ? trim((string) $input['image_api_key']) : '';
+        if ('' === $image_api_key) {
+            $image_api_key = (string) $existing['image_api_key'];
+        }
+
+        $image_model = isset($input['image_model']) ? trim((string) $input['image_model']) : (string) $existing['image_model'];
+        $image_request_timeout = isset($input['image_request_timeout']) ? (int) $input['image_request_timeout'] : (int) ($existing['image_request_timeout'] ?? $defaults['image_request_timeout']);
+        $image_request_timeout = max(5, min(300, $image_request_timeout));
+
         $queue_batch_size = isset($input['queue_batch_size']) ? (int) $input['queue_batch_size'] : (int) $existing['queue_batch_size'];
         $queue_batch_size = max(1, min(50, $queue_batch_size));
 
@@ -215,6 +236,11 @@ class AIditor_Settings
             'request_timeout'       => $timeout,
             'default_model_profile_id' => $default_model_profile_id,
             'model_profiles'        => $model_profiles,
+            'image_generation_enabled' => $image_generation_enabled,
+            'image_base_url'        => $image_base_url,
+            'image_api_key'         => $image_api_key,
+            'image_model'           => $image_model,
+            'image_request_timeout' => $image_request_timeout,
             'queue_batch_size'      => $queue_batch_size,
             'queue_time_limit'      => $queue_time_limit,
             'queue_concurrency'     => $queue_concurrency,

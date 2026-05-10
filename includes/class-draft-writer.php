@@ -3,7 +3,15 @@ declare(strict_types=1);
 
 class AIditor_Draft_Writer
 {
+    protected const LOCAL_IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 30;
+
+    protected const LOCAL_IMAGE_WEBP_QUALITY = 80;
+
+    protected const LOCAL_IMAGE_MIME_TYPE = 'image/webp';
+
     protected AIditor_Settings $settings;
+
+    protected string $last_image_localize_error = '';
 
     public function __construct(AIditor_Settings $settings)
     {
@@ -109,7 +117,7 @@ class AIditor_Draft_Writer
             }
         }
 
-        $this->write_single_category_name_tag($post_id, $effective_post_type, $target_taxonomy, $target_term_id);
+        $this->write_default_post_tag($post_id, $effective_post_type, $article, $source);
 
         $meta = array(
             '_aiditor_ingest_source_site'     => (string) ($source['source_site'] ?? ''),
@@ -155,6 +163,10 @@ class AIditor_Draft_Writer
         );
         $meta_updates = array();
         $taxonomy_updates = array();
+        $content_result = array(
+            'content_html'      => '',
+            'featured_image_id' => 0,
+        );
 
         if ($author_id > 0) {
             $post_data['post_author'] = $author_id;
@@ -206,9 +218,18 @@ class AIditor_Draft_Writer
         }
 
         if (! empty($import_request['creation_media'])) {
+            $this->reset_image_localize_error();
             $content_result = $this->localize_creation_content_images((string) ($fields['content'] ?? ''), (string) ($import_request['cover_image_url'] ?? ''));
             if ('' !== $content_result['content_html']) {
                 $post_data['post_content'] = self::convert_html_to_block_content($content_result['content_html']);
+            }
+
+            if (
+                ! empty($import_request['apply_featured_image'])
+                && '' !== esc_url_raw(trim((string) ($import_request['cover_image_url'] ?? '')))
+                && empty($content_result['featured_image_id'])
+            ) {
+                throw new RuntimeException($this->build_featured_image_localize_failure_message());
             }
         }
 
@@ -262,11 +283,23 @@ class AIditor_Draft_Writer
 
         $effective_post_type = function_exists('get_post_type') ? (string) get_post_type($post_id) : $post_type;
         if (empty($taxonomy_updates['post_tag'])) {
-            $this->write_single_category_name_tag($post_id, $effective_post_type ?: $post_type, $target_taxonomy, $target_term_id);
+            $this->write_default_post_tag($post_id, $effective_post_type ?: $post_type, $article, $source);
         }
 
-        if (! empty($import_request['creation_media']) && ! empty($content_result['featured_image_id'])) {
+        if (
+            ! empty($import_request['creation_media'])
+            && ! empty($import_request['apply_featured_image'])
+            && ! empty($content_result['featured_image_id'])
+        ) {
             $this->assign_featured_image($post_id, (int) $content_result['featured_image_id']);
+        }
+
+        if (
+            ! empty($import_request['creation_media'])
+            && ! empty($content_result['featured_image_url'])
+            && isset($meta_updates['cover_image_url'])
+        ) {
+            $meta_updates['cover_image_url'] = (string) $content_result['featured_image_url'];
         }
 
         update_post_meta($post_id, '_aiditor_ingest_source_url', (string) ($source['source_url'] ?? ''));
@@ -434,20 +467,16 @@ class AIditor_Draft_Writer
     protected function localize_creation_content_images(string $content_html, string $cover_image_url = ''): array
     {
         $content_html = trim($content_html);
+        $cover_image_url = esc_url_raw(trim($cover_image_url));
         $featured_image_id = 0;
+        $featured_image_url = '';
 
         if ('' === $content_html) {
-            return array(
-                'content_html'       => '',
-                'featured_image_id'  => 0,
-            );
+            return $this->localize_cover_without_content('', $cover_image_url);
         }
 
         if (! class_exists('DOMDocument')) {
-            return array(
-                'content_html'      => $content_html,
-                'featured_image_id' => 0,
-            );
+            return $this->localize_cover_without_content($content_html, $cover_image_url);
         }
 
         $document = new DOMDocument('1.0', 'UTF-8');
@@ -457,14 +486,10 @@ class AIditor_Draft_Writer
         libxml_use_internal_errors($previous);
 
         if (! $loaded) {
-            return array(
-                'content_html'      => $content_html,
-                'featured_image_id' => 0,
-            );
+            return $this->localize_cover_without_content($content_html, $cover_image_url);
         }
 
         $images = $document->getElementsByTagName('img');
-        $cover_image_url = esc_url_raw(trim($cover_image_url));
 
         for ($index = $images->length - 1; $index >= 0; $index--) {
             $image = $images->item($index);
@@ -489,6 +514,7 @@ class AIditor_Draft_Writer
 
             if (0 === $featured_image_id && ('' === $cover_image_url || $cover_image_url === $remote_url)) {
                 $featured_image_id = (int) $attachment['id'];
+                $featured_image_url = (string) $attachment['url'];
             }
         }
 
@@ -496,6 +522,7 @@ class AIditor_Draft_Writer
             $attachment = $this->sideload_remote_image($cover_image_url);
             if (null !== $attachment) {
                 $featured_image_id = (int) $attachment['id'];
+                $featured_image_url = (string) $attachment['url'];
             }
         }
 
@@ -511,13 +538,61 @@ class AIditor_Draft_Writer
         return array(
             'content_html'      => '' !== trim($html) ? $html : $content_html,
             'featured_image_id' => $featured_image_id,
+            'featured_image_url' => $featured_image_url,
         );
+    }
+
+    protected function localize_cover_without_content(string $content_html, string $cover_image_url): array
+    {
+        $featured_image_id = 0;
+        $featured_image_url = '';
+
+        if ('' !== $cover_image_url) {
+            $attachment = $this->sideload_remote_image($cover_image_url);
+            if (null !== $attachment) {
+                $featured_image_id = (int) $attachment['id'];
+                $featured_image_url = (string) $attachment['url'];
+            }
+        }
+
+        return array(
+            'content_html'       => $content_html,
+            'featured_image_id'  => $featured_image_id,
+            'featured_image_url' => $featured_image_url,
+        );
+    }
+
+    protected function reset_image_localize_error(): void
+    {
+        $this->last_image_localize_error = '';
+    }
+
+    protected function remember_image_localize_error(string $message): void
+    {
+        $message = trim($message);
+
+        if ('' === $message) {
+            return;
+        }
+
+        $this->last_image_localize_error = $message;
+    }
+
+    protected function build_featured_image_localize_failure_message(): string
+    {
+        $detail = trim($this->last_image_localize_error);
+
+        if ('' === $detail) {
+            return '封面图本地化失败：无法转码为 WebP 或无法入库媒体库，请检查站点图像处理能力。';
+        }
+
+        return '封面图本地化失败：' . $detail;
     }
 
     protected function sideload_remote_image(string $url): ?array
     {
         $url = esc_url_raw(trim($url));
-        if ('' === $url || ! function_exists('download_url') || ! function_exists('media_handle_sideload')) {
+        if ('' === $url) {
             return null;
         }
 
@@ -525,15 +600,32 @@ class AIditor_Draft_Writer
         require_once ABSPATH . 'wp-admin/includes/media.php';
         require_once ABSPATH . 'wp-admin/includes/image.php';
 
-        $tmp = download_url($url, 30);
-        if (is_wp_error($tmp)) {
+        if (! function_exists('download_url') || ! function_exists('media_handle_sideload')) {
+            $this->remember_image_localize_error('WordPress 媒体库功能未加载，无法执行封面图入库。');
             return null;
         }
 
-        $path = wp_parse_url($url, PHP_URL_PATH);
-        $filename = basename(is_string($path) ? $path : '');
-        if ('' === $filename) {
-            $filename = 'aiditor-image-' . wp_generate_password(8, false) . '.jpg';
+        $tmp = $this->download_remote_image_to_temp($url);
+        if (null === $tmp) {
+            return null;
+        }
+
+        $webp_tmp = $this->transcode_temp_image_to_webp($tmp);
+        if (null === $webp_tmp) {
+            @unlink($tmp);
+            return null;
+        }
+
+        @unlink($tmp);
+        $tmp = $webp_tmp;
+
+        $filename = $this->build_localized_image_filename($url);
+        $filetype = wp_check_filetype($filename);
+
+        if (self::LOCAL_IMAGE_MIME_TYPE !== (string) ($filetype['type'] ?? '')) {
+            $this->remember_image_localize_error('生成的 WebP 文件名未被 WordPress 识别为 image/webp。');
+            @unlink($tmp);
+            return null;
         }
 
         $file_array = array(
@@ -543,7 +635,29 @@ class AIditor_Draft_Writer
 
         $attachment_id = media_handle_sideload($file_array, 0);
         if (is_wp_error($attachment_id)) {
+            $this->remember_image_localize_error('媒体库入库失败：' . $attachment_id->get_error_message());
             @unlink($tmp);
+            return null;
+        }
+
+        if (! function_exists('get_attached_file')) {
+            return array(
+                'id'    => (int) $attachment_id,
+                'url'   => (string) wp_get_attachment_url($attachment_id),
+                'title' => trim((string) get_the_title($attachment_id)),
+            );
+        }
+
+        $attached_path = (string) get_attached_file((int) $attachment_id);
+        $attached_mime = $this->resolve_attached_image_mime((int) $attachment_id, $attached_path);
+
+        if (self::LOCAL_IMAGE_MIME_TYPE !== $attached_mime) {
+            if (function_exists('wp_delete_attachment')) {
+                wp_delete_attachment((int) $attachment_id, true);
+            }
+            $this->remember_image_localize_error(
+                '媒体库已保存文件，但 MIME 校验失败：期望 image/webp，实际为 ' . ('' !== $attached_mime ? $attached_mime : 'unknown') . '。'
+            );
             return null;
         }
 
@@ -552,6 +666,222 @@ class AIditor_Draft_Writer
             'url'   => (string) wp_get_attachment_url($attachment_id),
             'title' => trim((string) get_the_title($attachment_id)),
         );
+    }
+
+    protected function download_remote_image_to_temp(string $url): ?string
+    {
+        $download_error = '';
+        $tmp = download_url($url, self::LOCAL_IMAGE_DOWNLOAD_TIMEOUT_SECONDS);
+
+        if (! is_wp_error($tmp)) {
+            return (string) $tmp;
+        }
+
+        $download_error = trim($tmp->get_error_message());
+
+        $fallback_error = '';
+        $fallback_tmp = $this->download_remote_image_via_http_api($url, $fallback_error);
+        if (null !== $fallback_tmp) {
+            return $fallback_tmp;
+        }
+
+        $message_parts = array();
+
+        if ('' !== $download_error) {
+            $message_parts[] = 'WordPress 下载失败：' . $download_error;
+        }
+
+        if ('' !== trim($fallback_error)) {
+            $message_parts[] = 'HTTP 备用下载失败：' . trim($fallback_error);
+        }
+
+        if (empty($message_parts)) {
+            $message_parts[] = '下载远程图片失败。';
+        }
+
+        $this->remember_image_localize_error(implode('；', $message_parts));
+
+        return null;
+    }
+
+    protected function download_remote_image_via_http_api(string $url, string &$error_message = ''): ?string
+    {
+        $error_message = '';
+
+        if (! function_exists('wp_remote_get') || ! function_exists('wp_tempnam')) {
+            $error_message = '当前环境缺少 WordPress HTTP 下载能力。';
+            return null;
+        }
+
+        $tmp = wp_tempnam($url . '.aiditor-download');
+        if (! is_string($tmp) || '' === $tmp) {
+            $error_message = '无法创建图片下载临时文件。';
+            return null;
+        }
+
+        $response = wp_remote_get(
+            $url,
+            array(
+                'timeout'             => self::LOCAL_IMAGE_DOWNLOAD_TIMEOUT_SECONDS,
+                'redirection'         => 5,
+                'sslverify'           => (bool) apply_filters('aiditor_sslverify', true),
+                'stream'              => true,
+                'filename'            => $tmp,
+                'reject_unsafe_urls'   => false,
+                'headers'             => array(
+                    'Accept' => 'image/*, */*;q=0.8',
+                ),
+                'user-agent'          => 'Mozilla/5.0 (compatible; AIditor/1.0)',
+            )
+        );
+
+        if (is_wp_error($response)) {
+            $error_message = $response->get_error_message();
+            @unlink($tmp);
+            return null;
+        }
+
+        $status = (int) wp_remote_retrieve_response_code($response);
+        if ($status < 200 || $status >= 300) {
+            $status_message = function_exists('wp_remote_retrieve_response_message')
+                ? trim((string) wp_remote_retrieve_response_message($response))
+                : '';
+            $error_message = sprintf(
+                'HTTP 状态码为 %d%s',
+                $status,
+                '' !== $status_message ? '，' . $status_message : ''
+            );
+            @unlink($tmp);
+            return null;
+        }
+
+        if (! file_exists($tmp)) {
+            $error_message = 'HTTP 下载成功，但临时文件未生成。';
+            return null;
+        }
+
+        return $tmp;
+    }
+
+    protected function transcode_temp_image_to_webp(string $tmp): ?string
+    {
+        if ('' === trim($tmp)) {
+            $this->remember_image_localize_error('下载到的临时图片路径为空。');
+            return null;
+        }
+
+        if (! function_exists('wp_get_image_editor')) {
+            $this->remember_image_localize_error('当前环境缺少 wp_get_image_editor，无法执行 WebP 转码。');
+            return null;
+        }
+
+        $editor = wp_get_image_editor($tmp);
+        if (is_wp_error($editor)) {
+            $this->remember_image_localize_error('初始化 WordPress 图片编辑器失败：' . $editor->get_error_message());
+            return null;
+        }
+
+        if (method_exists($editor, 'set_quality')) {
+            $editor->set_quality(self::LOCAL_IMAGE_WEBP_QUALITY);
+        }
+
+        if (! function_exists('wp_tempnam')) {
+            $this->remember_image_localize_error('当前环境缺少 wp_tempnam，无法创建 WebP 临时文件。');
+            return null;
+        }
+
+        $webp_tmp = wp_tempnam($tmp . '.webp');
+        if (! is_string($webp_tmp) || '' === $webp_tmp) {
+            $this->remember_image_localize_error('创建 WebP 临时文件失败。');
+            return null;
+        }
+
+        if (! preg_match('/\.webp$/i', $webp_tmp)) {
+            @unlink($webp_tmp);
+            $webp_tmp .= '.webp';
+        }
+
+        $result = $editor->save($webp_tmp, self::LOCAL_IMAGE_MIME_TYPE);
+        if (is_wp_error($result) || ! is_array($result) || empty($result['path'])) {
+            $message = is_wp_error($result) ? $result->get_error_message() : '图片编辑器未返回有效输出路径。';
+            $this->remember_image_localize_error('保存 WebP 临时文件失败：' . $message);
+            @unlink($webp_tmp);
+            return null;
+        }
+
+        $saved_path = (string) $result['path'];
+        if ('' === $saved_path || ! file_exists($saved_path)) {
+            $this->remember_image_localize_error('WebP 临时文件未生成到磁盘。');
+            @unlink($webp_tmp);
+            return null;
+        }
+
+        if ($saved_path !== $webp_tmp && file_exists($webp_tmp)) {
+            @unlink($webp_tmp);
+        }
+
+        $verified_mime = $this->detect_image_mime_type($saved_path);
+        if (self::LOCAL_IMAGE_MIME_TYPE !== $verified_mime) {
+            $this->remember_image_localize_error(
+                'WebP 转码完成，但输出文件 MIME 校验失败：期望 image/webp，实际为 ' . ('' !== $verified_mime ? $verified_mime : 'unknown') . '。'
+            );
+            @unlink($saved_path);
+            return null;
+        }
+
+        return $saved_path;
+    }
+
+    protected function detect_image_mime_type(string $path): string
+    {
+        $path = trim($path);
+
+        if ('' === $path || ! file_exists($path)) {
+            return '';
+        }
+
+        if (function_exists('wp_get_image_mime')) {
+            $mime = wp_get_image_mime($path);
+            if (is_string($mime) && '' !== trim($mime)) {
+                return trim($mime);
+            }
+        }
+
+        if (function_exists('mime_content_type')) {
+            $mime = mime_content_type($path);
+            if (is_string($mime) && '' !== trim($mime)) {
+                return trim($mime);
+            }
+        }
+
+        $type = wp_check_filetype($path);
+
+        return trim((string) ($type['type'] ?? ''));
+    }
+
+    protected function resolve_attached_image_mime(int $attachment_id, string $attached_path): string
+    {
+        if ($attachment_id > 0 && function_exists('get_post_mime_type')) {
+            $mime = get_post_mime_type($attachment_id);
+            if (is_string($mime) && '' !== trim($mime)) {
+                return trim($mime);
+            }
+        }
+
+        return $this->detect_image_mime_type($attached_path);
+    }
+
+    protected function build_localized_image_filename(string $url): string
+    {
+        $path = wp_parse_url($url, PHP_URL_PATH);
+        $basename = basename(is_string($path) ? $path : '');
+        $name = sanitize_file_name((string) pathinfo($basename, PATHINFO_FILENAME));
+
+        if ('' === $name) {
+            $name = 'aiditor-image-' . wp_generate_password(8, false);
+        }
+
+        return $name . '.webp';
     }
 
     protected function assign_featured_image(int $post_id, int $attachment_id): void
@@ -626,19 +956,48 @@ class AIditor_Draft_Writer
         return is_array($admins) && ! empty($admins) ? (int) $admins[0] : 0;
     }
 
-    protected function write_single_category_name_tag(int $post_id, string $post_type, string $target_taxonomy, int $target_term_id): void
+    protected function write_default_post_tag(int $post_id, string $post_type, array $article, array $source): void
     {
         if (! function_exists('taxonomy_exists') || ! taxonomy_exists('post_tag') || ! is_object_in_taxonomy($post_type, 'post_tag')) {
             return;
         }
 
-        $tag_name = $this->resolve_target_term_name($target_taxonomy, $target_term_id);
+        $tag_names = $this->normalize_post_tag_names($article['suggested_tags'] ?? $source['source_tags'] ?? array());
 
-        if ('' === $tag_name) {
+        if (empty($tag_names)) {
             return;
         }
 
-        wp_set_post_tags($post_id, array($tag_name), false);
+        wp_set_post_tags($post_id, $tag_names, false);
+    }
+
+    protected function normalize_post_tag_names($tags): array
+    {
+        if (! is_array($tags)) {
+            return array();
+        }
+
+        $normalized = array();
+
+        foreach ($tags as $tag) {
+            if (is_string($tag) && '' !== trim($tag)) {
+                $normalized[] = trim($tag);
+                continue;
+            }
+
+            if (! is_array($tag)) {
+                continue;
+            }
+
+            foreach (array('name', 'slug', 'label') as $field) {
+                if (isset($tag[$field]) && is_string($tag[$field]) && '' !== trim($tag[$field])) {
+                    $normalized[] = trim($tag[$field]);
+                    break;
+                }
+            }
+        }
+
+        return array_values(array_unique($normalized));
     }
 
     protected function resolve_target_term_name(string $target_taxonomy, int $target_term_id): string

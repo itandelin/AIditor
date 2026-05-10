@@ -31,6 +31,8 @@ class AIditor_REST_Controller
 
     protected AIditor_AI_Extractor $ai_extractor;
 
+    protected AIditor_Image_Generator $image_generator;
+
     protected AIditor_Draft_Writer $draft_writer;
 
     protected AIditor_Queue_Worker $queue_worker;
@@ -49,6 +51,7 @@ class AIditor_REST_Controller
         AIditor_Taxonomy_Browser $taxonomy_browser,
         AIditor_AI_Rewriter $rewriter,
         AIditor_AI_Extractor $ai_extractor,
+        AIditor_Image_Generator $image_generator,
         AIditor_Draft_Writer $draft_writer,
         AIditor_Queue_Worker $queue_worker
     ) {
@@ -65,6 +68,7 @@ class AIditor_REST_Controller
         $this->taxonomy_browser = $taxonomy_browser;
         $this->rewriter         = $rewriter;
         $this->ai_extractor     = $ai_extractor;
+        $this->image_generator  = $image_generator;
         $this->draft_writer     = $draft_writer;
         $this->queue_worker     = $queue_worker;
     }
@@ -96,6 +100,30 @@ class AIditor_REST_Controller
                 array(
                     'methods'             => WP_REST_Server::CREATABLE,
                     'callback'            => array($this, 'test_model_settings'),
+                    'permission_callback' => array($this, 'can_manage'),
+                ),
+            )
+        );
+
+        register_rest_route(
+            'aiditor/v1',
+            '/settings/image-models',
+            array(
+                array(
+                    'methods'             => WP_REST_Server::CREATABLE,
+                    'callback'            => array($this, 'list_image_models'),
+                    'permission_callback' => array($this, 'can_manage'),
+                ),
+            )
+        );
+
+        register_rest_route(
+            'aiditor/v1',
+            '/cover-image/generate',
+            array(
+                array(
+                    'methods'             => WP_REST_Server::CREATABLE,
+                    'callback'            => array($this, 'generate_cover_image'),
                     'permission_callback' => array($this, 'can_manage'),
                 ),
             )
@@ -458,6 +486,45 @@ class AIditor_REST_Controller
                 'required'          => false,
                 'sanitize_callback' => 'sanitize_key',
             ),
+            'image_generation_enabled' => array(
+                'type'              => 'boolean',
+                'required'          => false,
+            ),
+            'image_base_url' => array(
+                'type'              => 'string',
+                'required'          => false,
+                'sanitize_callback' => 'esc_url_raw',
+            ),
+            'image_api_key' => array(
+                'type'              => 'string',
+                'required'          => false,
+                'sanitize_callback' => array($this, 'sanitize_plain_setting_string'),
+            ),
+            'image_model' => array(
+                'type'              => 'string',
+                'required'          => false,
+                'sanitize_callback' => 'sanitize_text_field',
+            ),
+            'image_request_timeout' => array(
+                'type'              => 'integer',
+                'required'          => false,
+                'validate_callback' => array($this, 'validate_numeric_setting'),
+            ),
+            'image_size' => array(
+                'type'              => 'string',
+                'required'          => false,
+                'sanitize_callback' => 'sanitize_text_field',
+            ),
+            'image_quality' => array(
+                'type'              => 'string',
+                'required'          => false,
+                'sanitize_callback' => 'sanitize_key',
+            ),
+            'image_style' => array(
+                'type'              => 'string',
+                'required'          => false,
+                'sanitize_callback' => 'sanitize_key',
+            ),
             'model_profiles' => array(
                 'required'          => false,
                 'validate_callback' => array($this, 'validate_model_profiles_setting'),
@@ -604,6 +671,125 @@ class AIditor_REST_Controller
             );
         } catch (Throwable $exception) {
             return new WP_Error('aiditor_model_test_failed', '模型测试失败：' . $exception->getMessage(), array('status' => 400));
+        }
+    }
+
+    public function generate_cover_image(WP_REST_Request $request)
+    {
+        try {
+            $payload = $this->get_request_payload($request);
+            $result = $this->image_generator->generate_cover(
+                array(
+                    'context'         => sanitize_key((string) ($payload['context'] ?? '')),
+                    'title'           => sanitize_text_field((string) ($payload['title'] ?? '')),
+                    'summary'         => sanitize_textarea_field((string) ($payload['summary'] ?? '')),
+                    'keywords'        => $payload['keywords'] ?? array(),
+                    'content'         => (string) ($payload['content'] ?? ''),
+                    'source_url'      => esc_url_raw((string) ($payload['source_url'] ?? '')),
+                    'prompt_override' => sanitize_textarea_field((string) ($payload['prompt_override'] ?? '')),
+                    'ratio'           => sanitize_text_field((string) ($payload['ratio'] ?? '')),
+                    'cover_request_id'=> sanitize_key((string) ($payload['cover_request_id'] ?? '')),
+                    'cover_task_id'   => sanitize_key((string) ($payload['cover_task_id'] ?? '')),
+                    'retry_only'      => ! empty($payload['retry_only']),
+                )
+            );
+
+            return rest_ensure_response(
+                array(
+                    'image_url' => (string) ($result['image_url'] ?? ''),
+                    'prompt'    => (string) ($result['prompt'] ?? ''),
+                    'message'   => '封面图生成成功。',
+                )
+            );
+        } catch (Throwable $exception) {
+            $status = $this->resolve_cover_error_status($exception);
+            $error_data = array('status' => $status);
+            $task_id = trim($this->image_generator->get_last_cover_task_id());
+
+            if ('' !== $task_id) {
+                $error_data['cover_task_id'] = $task_id;
+            }
+
+            if ($this->image_generator->was_last_cover_task_pending()) {
+                $error_data['cover_task_pending'] = true;
+            }
+
+            return new WP_Error(
+                'aiditor_cover_generate_failed',
+                $exception->getMessage(),
+                $error_data
+            );
+        }
+    }
+
+    protected function resolve_cover_error_status(Throwable $exception): int
+    {
+        $status = 0;
+
+        if ($exception->getCode() > 0) {
+            $status = (int) $exception->getCode();
+        }
+
+        if ($status < 100 || $status > 599) {
+            $status = $this->extract_http_status_from_message($exception->getMessage());
+        }
+
+        if (524 === $status) {
+            // WordPress 不内置 524 状态描述，这里映射到标准 504，避免响应头被静默忽略。
+            return 504;
+        }
+
+        if ($status >= 100 && $status <= 599 && '' !== get_status_header_desc($status)) {
+            return $status;
+        }
+
+        if ($status >= 500) {
+            return 500;
+        }
+
+        if ($status >= 400) {
+            return 400;
+        }
+
+        return 500;
+    }
+
+    protected function extract_http_status_from_message(string $message): int
+    {
+        if (preg_match('/(?:http(?:\s+状态码为)?\s*|status(?:\s*code)?\s*[:=]?\s*)(\d{3})/iu', $message, $matches)) {
+            return (int) $matches[1];
+        }
+
+        return 0;
+    }
+
+    public function list_image_models(WP_REST_Request $request)
+    {
+        try {
+            $payload = $this->get_request_payload($request);
+            $models = $this->image_generator->list_models(
+                array(
+                    'image_base_url' => isset($payload['image_base_url']) ? trim((string) $payload['image_base_url']) : '',
+                    'image_api_key' => isset($payload['image_api_key']) ? trim((string) $payload['image_api_key']) : '',
+                    'image_request_timeout' => max(5, min(300, isset($payload['image_request_timeout']) ? (int) $payload['image_request_timeout'] : 60)),
+                )
+            );
+
+            return rest_ensure_response(
+                array(
+                    'models'        => $models,
+                    'debug_version' => 'image-model-debug-v3',
+                    'debug_ids'     => array_map(
+                        static function (array $model): string {
+                            return (string) ($model['id'] ?? '');
+                        },
+                        $models
+                    ),
+                    'message'       => empty($models) ? '接口已连通，但没有返回可选模型。' : '模型已获取。',
+                )
+            );
+        } catch (Throwable $exception) {
+            return new WP_Error('aiditor_image_models_failed', $exception->getMessage(), array('status' => 400));
         }
     }
 
@@ -995,6 +1181,8 @@ class AIditor_REST_Controller
             $target_taxonomy  = sanitize_key((string) ($payload['target_taxonomy'] ?? 'category'));
             $target_term_id   = (int) ($payload['target_term_id'] ?? 0);
             $extra_tax_terms  = is_array($payload['extra_tax_terms'] ?? null) ? $payload['extra_tax_terms'] : array();
+            $cover_image_url  = esc_url_raw(trim((string) ($payload['cover_image_url'] ?? '')));
+            $apply_featured_image = ! empty($payload['apply_featured_image']);
             $author_id        = $this->get_current_admin_author_id();
             $final_fields     = $this->build_editing_publish_fields($field_schema, $extracted_fields, $rewritten_fields, $publish_fields);
 
@@ -1022,12 +1210,15 @@ class AIditor_REST_Controller
                     'source_summary' => (string) ($final_fields['summary'] ?? ''),
                 ),
                 array(
-                    'post_type'       => $post_type,
-                    'post_status'     => $post_status,
-                    'target_taxonomy' => $target_taxonomy,
-                    'target_term_id'  => $target_term_id,
-                    'extra_tax_terms' => $extra_tax_terms,
-                    'author_id'       => $author_id,
+                    'post_type'            => $post_type,
+                    'post_status'          => $post_status,
+                    'target_taxonomy'      => $target_taxonomy,
+                    'target_term_id'       => $target_term_id,
+                    'extra_tax_terms'      => $extra_tax_terms,
+                    'author_id'            => $author_id,
+                    'creation_media'       => '' !== $cover_image_url,
+                    'cover_image_url'      => $cover_image_url,
+                    'apply_featured_image' => $apply_featured_image,
                 ),
                 $field_mapping
             );
@@ -1109,6 +1300,8 @@ class AIditor_REST_Controller
             $target_taxonomy = sanitize_key((string) ($payload['target_taxonomy'] ?? 'category'));
             $target_term_id  = (int) ($payload['target_term_id'] ?? 0);
             $extra_tax_terms = is_array($payload['extra_tax_terms'] ?? null) ? $payload['extra_tax_terms'] : array();
+            $cover_image_url = esc_url_raw(trim((string) ($payload['cover_image_url'] ?? $generated['cover_image_url'] ?? '')));
+            $apply_featured_image = ! empty($payload['apply_featured_image']);
             $author_id       = $this->get_current_admin_author_id();
             $final_fields    = $this->build_editing_publish_fields($field_schema, $generated, array(), $publish_fields);
 
@@ -1137,14 +1330,15 @@ class AIditor_REST_Controller
                     'source_summary' => (string) ($final_fields['summary'] ?? ''),
                 ),
                 array(
-                    'post_type'       => $post_type,
-                    'post_status'     => $post_status,
-                    'target_taxonomy' => $target_taxonomy,
-                    'target_term_id'  => $target_term_id,
-                    'extra_tax_terms' => $extra_tax_terms,
-                    'author_id'       => $author_id,
-                    'creation_media'  => true,
-                    'cover_image_url' => (string) ($generated['cover_image_url'] ?? ''),
+                    'post_type'            => $post_type,
+                    'post_status'          => $post_status,
+                    'target_taxonomy'      => $target_taxonomy,
+                    'target_term_id'       => $target_term_id,
+                    'extra_tax_terms'      => $extra_tax_terms,
+                    'author_id'            => $author_id,
+                    'creation_media'       => '' !== $cover_image_url,
+                    'cover_image_url'      => $cover_image_url,
+                    'apply_featured_image' => $apply_featured_image,
                 ),
                 $field_mapping
             );

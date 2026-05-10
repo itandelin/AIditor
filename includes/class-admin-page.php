@@ -596,6 +596,38 @@ class AIditor_Admin_Page
                             </div>
                         </div>
 
+                        <div class="aiditor-setting-block aiditor-cover-image-block">
+                            <div class="aiditor-card-heading-row">
+                                <div>
+                                    <h3><?php echo esc_html__('封面图', 'aiditor'); ?></h3>
+                                    <p class="description"><?php echo esc_html__('可在发布前一键生成封面图，并选择是否将其设为文章特色图。', 'aiditor'); ?></p>
+                                </div>
+                            </div>
+                            <div class="aiditor-field">
+                                <label for="aiditor-editing-cover-ratio"><?php echo esc_html__('封面比例', 'aiditor'); ?></label>
+                                <select id="aiditor-editing-cover-ratio">
+                                    <option value="1:1"><?php echo esc_html__('1:1（正方形）', 'aiditor'); ?></option>
+                                    <option value="16:9"><?php echo esc_html__('16:9（横版）', 'aiditor'); ?></option>
+                                    <option value="4:3" selected><?php echo esc_html__('4:3（横版）', 'aiditor'); ?></option>
+                                    <option value="3:4"><?php echo esc_html__('3:4（竖版）', 'aiditor'); ?></option>
+                                    <option value="9:16"><?php echo esc_html__('9:16（竖版）', 'aiditor'); ?></option>
+                                </select>
+                            </div>
+                            <div class="aiditor-actions">
+                                <button type="button" class="button" id="aiditor-editing-generate-cover-button"><?php echo esc_html__('一键生成封面图', 'aiditor'); ?></button>
+                                <button type="button" class="button" id="aiditor-editing-retry-cover-button"><?php echo esc_html__('重试生成封面图', 'aiditor'); ?></button>
+                            </div>
+                            <div id="aiditor-editing-cover-preview" class="aiditor-cover-preview">
+                                <p class="description"><?php echo esc_html__('生成后，这里会显示封面图预览。', 'aiditor'); ?></p>
+                            </div>
+                            <div class="aiditor-field aiditor-field-checkbox">
+                                <label for="aiditor-editing-apply-featured-image">
+                                    <input id="aiditor-editing-apply-featured-image" type="checkbox" />
+                                    <span><?php echo esc_html__('发布时设为特色图', 'aiditor'); ?></span>
+                                </label>
+                            </div>
+                        </div>
+
                         <div class="aiditor-actions aiditor-settings-save-row">
                             <button type="button" class="button button-primary" id="aiditor-editing-publish-button"><?php echo esc_html__('发布选中内容', 'aiditor'); ?></button>
                         </div>
@@ -713,6 +745,38 @@ class AIditor_Admin_Page
                                     </div>
                                 </div>
 
+                                <div class="aiditor-setting-block aiditor-cover-image-block">
+                                    <div class="aiditor-card-heading-row">
+                                        <div>
+                                            <h3><?php echo esc_html__('封面图', 'aiditor'); ?></h3>
+                                            <p class="description"><?php echo esc_html__('可在发布前一键生成封面图，并选择是否将其设为文章特色图。', 'aiditor'); ?></p>
+                                        </div>
+                                    </div>
+                                    <div class="aiditor-field">
+                                        <label for="aiditor-creation-cover-ratio"><?php echo esc_html__('封面比例', 'aiditor'); ?></label>
+                                        <select id="aiditor-creation-cover-ratio">
+                                            <option value="1:1"><?php echo esc_html__('1:1（正方形）', 'aiditor'); ?></option>
+                                            <option value="16:9"><?php echo esc_html__('16:9（横版）', 'aiditor'); ?></option>
+                                            <option value="4:3" selected><?php echo esc_html__('4:3（横版）', 'aiditor'); ?></option>
+                                            <option value="3:4"><?php echo esc_html__('3:4（竖版）', 'aiditor'); ?></option>
+                                            <option value="9:16"><?php echo esc_html__('9:16（竖版）', 'aiditor'); ?></option>
+                                        </select>
+                                    </div>
+                                    <div class="aiditor-actions">
+                                        <button type="button" class="button" id="aiditor-creation-generate-cover-button"><?php echo esc_html__('一键生成封面图', 'aiditor'); ?></button>
+                                        <button type="button" class="button" id="aiditor-creation-retry-cover-button"><?php echo esc_html__('重试生成封面图', 'aiditor'); ?></button>
+                                    </div>
+                                    <div id="aiditor-creation-cover-preview" class="aiditor-cover-preview">
+                                        <p class="description"><?php echo esc_html__('生成后，这里会显示封面图预览。', 'aiditor'); ?></p>
+                                    </div>
+                                    <div class="aiditor-field aiditor-field-checkbox">
+                                        <label for="aiditor-creation-apply-featured-image">
+                                            <input id="aiditor-creation-apply-featured-image" type="checkbox" />
+                                            <span><?php echo esc_html__('发布时设为特色图', 'aiditor'); ?></span>
+                                        </label>
+                                    </div>
+                                </div>
+
                                 <div class="aiditor-actions aiditor-settings-save-row">
                                     <button type="button" class="button button-primary" id="aiditor-creation-publish-button"><?php echo esc_html__('发布创作内容', 'aiditor'); ?></button>
                                 </div>
@@ -734,6 +798,7 @@ class AIditor_Admin_Page
 
             <nav class="nav-tab-wrapper aiditor-tabs" aria-label="<?php echo esc_attr__('设置标签页', 'aiditor'); ?>">
                 <button type="button" class="nav-tab nav-tab-active" data-tab-target="ai-settings"><?php echo esc_html__('AI 设置', 'aiditor'); ?></button>
+                <button type="button" class="nav-tab" data-tab-target="image-settings"><?php echo esc_html__('生图设置', 'aiditor'); ?></button>
                 <button type="button" class="nav-tab" data-tab-target="article-styles"><?php echo esc_html__('文章风格', 'aiditor'); ?></button>
             </nav>
 
@@ -787,6 +852,39 @@ class AIditor_Admin_Page
 
                     </form>
                     <div id="aiditor-settings-notice" class="aiditor-notice" aria-live="polite"></div>
+                </div>
+            </section>
+
+            <section class="aiditor-panel" data-tab-panel="image-settings" hidden>
+                <div class="aiditor-card aiditor-settings-shell">
+                    <div class="aiditor-section-header aiditor-settings-header">
+                        <div>
+                            <h2><?php echo esc_html__('生图设置', 'aiditor'); ?></h2>
+                            <p class="description"><?php echo esc_html__('配置发布前封面图生成使用的 OpenAI 兼容生图模型。', 'aiditor'); ?></p>
+                        </div>
+                    </div>
+
+                    <form id="aiditor-image-settings-form" class="aiditor-settings-form">
+                        <div class="aiditor-setting-block">
+                            <div class="aiditor-field aiditor-field-checkbox">
+                                <label for="aiditor-image-generation-enabled">
+                                    <input id="aiditor-image-generation-enabled" name="image_generation_enabled" type="checkbox" value="1" />
+                                    <span><?php echo esc_html__('启用发布前一键生成封面图', 'aiditor'); ?></span>
+                                </label>
+                            </div>
+                            <div class="aiditor-form-grid aiditor-form-grid-two">
+                                <div class="aiditor-field aiditor-field-wide"><label for="aiditor-image-base-url"><?php echo esc_html__('接口地址', 'aiditor'); ?></label><input id="aiditor-image-base-url" name="image_base_url" type="url" class="regular-text code" placeholder="https://your-ai-endpoint.example/v1" /></div>
+                                <div class="aiditor-field aiditor-field-wide"><label for="aiditor-image-api-key"><?php echo esc_html__('API 密钥', 'aiditor'); ?></label><input id="aiditor-image-api-key" name="image_api_key" type="password" class="regular-text code" autocomplete="off" /><p id="aiditor-image-api-key-hint" class="description"></p></div>
+                                <div class="aiditor-field"><label for="aiditor-image-model"><?php echo esc_html__('模型名称', 'aiditor'); ?></label><select id="aiditor-image-model" name="image_model"></select></div>
+                                <div class="aiditor-field"><label for="aiditor-image-request-timeout"><?php echo esc_html__('请求超时', 'aiditor'); ?></label><input id="aiditor-image-request-timeout" name="image_request_timeout" type="number" min="5" max="300" step="1" /></div>
+                            </div>
+                        </div>
+                        <div class="aiditor-actions aiditor-settings-save-row">
+                            <button type="button" class="button" id="aiditor-fetch-image-models"><?php echo esc_html__('获取模型列表', 'aiditor'); ?></button>
+                            <button type="submit" class="button button-primary"><?php echo esc_html__('保存生图设置', 'aiditor'); ?></button>
+                        </div>
+                    </form>
+                    <div id="aiditor-image-settings-notice" class="aiditor-notice" aria-live="polite"></div>
                 </div>
             </section>
 
