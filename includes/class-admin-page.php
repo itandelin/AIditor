@@ -454,7 +454,6 @@ class AIditor_Admin_Page
     {
         $default_extract_instruction = '请提取标题、发布时间、关键词、摘要、正文与作者。正文只保留主体内容。';
         $default_rewrite_instruction = '请在保留事实准确的前提下，用更流畅、更适合中文资讯文章的表达方式重写。';
-        $default_creation_prompt      = '请围绕一个明确主题创作一篇适合中文网站发布的原创文章，要求标题明确、结构完整、信息准确、语言自然。';
         $default_creation_style       = '语言自然专业，面向中文互联网读者，避免空泛套话，段落结构清晰。';
         ?>
         <div class="wrap aiditor-admin">
@@ -654,8 +653,21 @@ class AIditor_Admin_Page
                                 </div>
 
                                 <div class="aiditor-field">
+                                    <label for="aiditor-creation-prompt-preset"><?php echo esc_html__('预置创作说明', 'aiditor'); ?></label>
+                                    <select id="aiditor-creation-prompt-preset">
+                                        <option value=""><?php echo esc_html__('不使用预置，直接手写', 'aiditor'); ?></option>
+                                        <option value="zh-news-topic"><?php echo esc_html__('中文主题创作', 'aiditor'); ?></option>
+                                        <option value="en-news-topic"><?php echo esc_html__('英文主题创作', 'aiditor'); ?></option>
+                                        <option value="global-brief-zh"><?php echo esc_html__('海外资讯中文编译', 'aiditor'); ?></option>
+                                        <option value="product-review"><?php echo esc_html__('产品评测创作', 'aiditor'); ?></option>
+                                        <option value="howto-guide"><?php echo esc_html__('教程指南创作', 'aiditor'); ?></option>
+                                    </select>
+                                    <p class="description"><?php echo esc_html__('选择后会填入下方文本框，你可以继续粘贴新闻简讯、相关网址或补充要求。', 'aiditor'); ?></p>
+                                </div>
+
+                                <div class="aiditor-field">
                                     <label for="aiditor-creation-prompt"><?php echo esc_html__('创作说明', 'aiditor'); ?></label>
-                                    <textarea id="aiditor-creation-prompt" rows="7" placeholder="<?php echo esc_attr__('例如：围绕某个产品、行业趋势、教程主题创作一篇适合中文网站发布的文章。', 'aiditor'); ?>"><?php echo esc_textarea($default_creation_prompt); ?></textarea>
+                                    <textarea id="aiditor-creation-prompt" rows="10" placeholder="<?php echo esc_attr__('可先选择预置创作说明，再在这里补充新闻简讯、相关网址或具体要求。', 'aiditor'); ?>"></textarea>
                                 </div>
 
                                 <div class="aiditor-field">

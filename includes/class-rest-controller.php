@@ -1249,6 +1249,7 @@ class AIditor_REST_Controller
                 ? $this->resolve_creation_style_prompt($style_id)
                 : $this->resolve_creation_style_prompt('editorial-guide');
             $combined_style     = trim($style_prompt . ('' !== $style_instruction ? "\n补充风格要求：" . $style_instruction : ''));
+            $reference_context  = $this->build_creation_reference_context($prompt);
 
             if ('' === $prompt) {
                 return new WP_Error('aiditor_creation_prompt_required', '请填写创作说明。', array('status' => 400));
@@ -1266,7 +1267,7 @@ class AIditor_REST_Controller
                         ),
                         array(
                             'role'    => 'user',
-                            'content' => $this->build_creation_user_prompt($prompt),
+                            'content' => $this->build_creation_user_prompt($prompt, $reference_context),
                         ),
                     ),
                 ),
@@ -1765,20 +1766,76 @@ class AIditor_REST_Controller
                 'source_url：如果文中明确引用某个公开来源则返回其 URL，否则返回空字符串。',
                 '不要返回虚构统计数据、伪造引用或不存在的链接。无法确认时宁可留空。',
                 '正文需具备自然小标题和完整段落，不要只写提纲。',
+                '如果用户提供了网址或系统补充的页面内容，必须优先基于这些公开来源进行事实扩写；不要伪造系统未提供且无法确认的事实。',
                 '风格要求：' . $style_prompt,
             )
         );
     }
 
-    protected function build_creation_user_prompt(string $prompt): string
+    protected function build_creation_user_prompt(string $prompt, string $reference_context = ''): string
     {
-        return implode(
-            "\n\n",
-            array(
-                '创作任务：' . $prompt,
-                '请输出一篇适合中文网站发布的完整文章，并严格返回指定 JSON 结构。',
-            )
-        );
+        $parts = array('创作任务：' . $prompt);
+
+        if ('' !== trim($reference_context)) {
+            $parts[] = '系统已根据创作说明中的网址抓取到以下公开页面内容，可作为事实补充来源：' . "\n" . $reference_context;
+        }
+
+        $parts[] = '请输出一篇适合中文网站发布的完整文章，并严格返回指定 JSON 结构。';
+
+        return implode("\n\n", $parts);
+    }
+
+    protected function build_creation_reference_context(string $prompt): string
+    {
+        $urls = $this->extract_creation_urls($prompt);
+
+        if (empty($urls)) {
+            return '';
+        }
+
+        $blocks = array();
+
+        foreach (array_slice($urls, 0, 3) as $url) {
+            try {
+                $page = $this->page_fetcher->fetch($url);
+                $text = trim((string) ($page['text'] ?? $page['full_text'] ?? ''));
+
+                if ('' === $text) {
+                    continue;
+                }
+
+                $blocks[] = implode(
+                    "\n",
+                    array(
+                        '来源：' . (string) ($page['url'] ?? $url),
+                        '标题：' . (string) ($page['title'] ?? ''),
+                        '摘要：' . (string) ($page['description'] ?? ''),
+                        '正文摘录：' . mb_substr($text, 0, 4000, 'UTF-8'),
+                    )
+                );
+            } catch (Throwable $exception) {
+                $blocks[] = '来源：' . $url . "\n" . '抓取状态：失败，原因：' . $exception->getMessage();
+            }
+        }
+
+        return implode("\n\n---\n\n", $blocks);
+    }
+
+    protected function extract_creation_urls(string $prompt): array
+    {
+        if (! preg_match_all('#https?://[^\s<>()"\']+#i', $prompt, $matches)) {
+            return array();
+        }
+
+        $urls = array();
+        foreach ($matches[0] as $url) {
+            $clean_url = esc_url_raw(rtrim((string) $url, "，。；：、,.!?:;)]}\"'"));
+            if ('' !== $clean_url && ! in_array($clean_url, $urls, true)) {
+                $urls[] = $clean_url;
+            }
+        }
+
+        return $urls;
     }
 
     protected function resolve_creation_style_prompt(string $style_id): string

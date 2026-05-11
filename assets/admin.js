@@ -58,6 +58,46 @@
         return (root || document).querySelector(selector);
     }
 
+    function getCreationPromptPresets() {
+        return {
+            'zh-news-topic': [
+                '请围绕下列新闻简讯创作一篇适合中文网站发布的原创文章，要求标题明确、结构完整、信息准确、语言自然。',
+                '请自行上网搜索相关客观真实的内容以补充篇幅。若原内容或网站非中文，请自行将最终创作结果翻译为中文。',
+                '',
+                '请在下方粘贴资讯简讯、原文片段或相关网址：'
+            ].join('\n'),
+            'en-news-topic': [
+                'Please write an original article suitable for publication on English websites based on the brief below.',
+                'The article must have a clear title, complete structure, factual accuracy, and natural language.',
+                'Please search for objective and verifiable public information online to enrich the content.',
+                'If the source content is not in English, translate the final output into English.',
+                '',
+                'Paste the news brief, source text, or related URLs below:'
+            ].join('\n'),
+            'global-brief-zh': [
+                '请根据下列海外资讯或外文网页，创作一篇适合中文网站发布的资讯文章。',
+                '要求信息准确、观点客观、结构清晰，并补充必要的背景信息与上下文。',
+                '请优先引用公开可核验的信息，不要虚构数据、引用或来源链接。',
+                '',
+                '请在下方粘贴外文简讯、原文片段或相关网址：'
+            ].join('\n'),
+            'product-review': [
+                '请围绕下列产品信息创作一篇评测向文章，适合中文网站发布。',
+                '文章需包含：核心亮点、使用体验、优缺点、适用人群与购买建议。',
+                '请尽量补充公开可验证的参数或事实，避免空泛描述。',
+                '',
+                '请在下方粘贴产品资料、评测要点或相关网址：'
+            ].join('\n'),
+            'howto-guide': [
+                '请围绕下列主题创作一篇中文教程指南，适合中文网站发布。',
+                '文章需包含：适用人群、前置条件、分步骤操作、常见问题与排错建议。',
+                '语言尽量清晰、可执行，必要时可补充权威来源信息。',
+                '',
+                '请在下方粘贴教程主题、参考资料或相关网址：'
+            ].join('\n')
+        };
+    }
+
     function $all(selector, root) {
         return Array.prototype.slice.call((root || document).querySelectorAll(selector));
     }
@@ -3390,6 +3430,44 @@
         return '';
     }
 
+    function bindCreationPromptPreset() {
+        var select = $('#aiditor-creation-prompt-preset');
+        var prompt = $('#aiditor-creation-prompt');
+        var presets = getCreationPromptPresets();
+        var applyPreset = function (forceOverwrite) {
+            var preset = presets[select.value] || '';
+
+            if (!preset) {
+                return false;
+            }
+
+            if (!forceOverwrite && prompt.value.trim()) {
+                return false;
+            }
+
+            prompt.value = preset;
+            return true;
+        };
+
+        if (!select || !prompt) {
+            return;
+        }
+
+        select.addEventListener('change', function () {
+            if (applyPreset(true)) {
+                prompt.focus();
+            }
+        });
+
+        // 某些浏览器会记住上次选择值，用户再次点开同一项不会触发 change。
+        select.addEventListener('click', function () {
+            applyPreset(false);
+        });
+
+        // 页面初次进入时，若下拉已是预置项且文本框为空，自动回填。
+        applyPreset(false);
+    }
+
     function bindCreationFieldEvents() {
         var mappingContainer = $('#aiditor-creation-field-mapping');
 
@@ -3453,6 +3531,7 @@
         if ($('#aiditor-creation-apply-featured-image')) {
             $('#aiditor-creation-apply-featured-image').checked = !!state.creation.applyFeaturedImage;
         }
+        bindCreationPromptPreset();
         renderCreationFieldMapping();
         bindCreationFieldEvents();
         renderArticleStyleOptions(state.articleStyles, '', '#aiditor-creation-style-preset');
