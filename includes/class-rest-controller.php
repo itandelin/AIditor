@@ -4,6 +4,9 @@ declare(strict_types=1);
 class AIditor_REST_Controller
 {
     protected const PREVIEW_LIMIT = 20;
+    protected const CREATION_JOB_OPTION_PREFIX = 'aiditor_creation_job_';
+    protected const CREATION_JOB_LOCK_PREFIX = 'aiditor_creation_lock_';
+    protected const CREATION_JOB_TTL = 3600;
 
     protected AIditor_Settings $settings;
 
@@ -297,6 +300,18 @@ class AIditor_REST_Controller
                 array(
                     'methods'             => WP_REST_Server::CREATABLE,
                     'callback'            => array($this, 'creation_generate_article'),
+                    'permission_callback' => array($this, 'can_manage'),
+                ),
+            )
+        );
+
+        register_rest_route(
+            'aiditor/v1',
+            '/creation/generate/(?P<job_id>[a-zA-Z0-9\-_]+)/status',
+            array(
+                array(
+                    'methods'             => WP_REST_Server::READABLE,
+                    'callback'            => array($this, 'get_creation_generate_status'),
                     'permission_callback' => array($this, 'can_manage'),
                 ),
             )
@@ -1238,28 +1253,168 @@ class AIditor_REST_Controller
 
     public function creation_generate_article(WP_REST_Request $request)
     {
+        $trace_id = $this->generate_trace_id('creation');
+
         try {
-            $payload            = $this->get_request_payload($request);
-            $prompt             = trim((string) ($payload['prompt'] ?? ''));
-            $style_id           = sanitize_key((string) ($payload['style_id'] ?? ''));
-            $style_instruction  = trim((string) ($payload['style_instruction'] ?? ''));
-            $runtime_settings   = $this->resolve_request_model_settings($payload);
-            $field_schema       = $this->get_default_creation_field_schema();
-            $style_prompt       = '' !== $style_id
-                ? $this->resolve_creation_style_prompt($style_id)
-                : $this->resolve_creation_style_prompt('editorial-guide');
-            $combined_style     = trim($style_prompt . ('' !== $style_instruction ? "\n补充风格要求：" . $style_instruction : ''));
-            $reference_context  = $this->build_creation_reference_context($prompt);
+            $payload = $this->get_request_payload($request);
+            $prompt  = trim((string) ($payload['prompt'] ?? ''));
 
             if ('' === $prompt) {
                 return new WP_Error('aiditor_creation_prompt_required', '请填写创作说明。', array('status' => 400));
             }
 
+            $this->resolve_request_model_settings($payload);
+            $job = $this->create_creation_job($payload, $trace_id);
+            $this->launch_creation_worker((string) $job['job_id']);
+
+            return rest_ensure_response(
+                array(
+                    'job_id'   => (string) $job['job_id'],
+                    'trace_id' => $trace_id,
+                    'status'   => 'queued',
+                    'message'  => 'AI 创作任务已创建，正在后台生成。',
+                )
+            );
+        } catch (Throwable $exception) {
+            return $this->build_creation_error_response($trace_id, 'queue', $exception, array());
+        }
+    }
+
+    public function get_creation_generate_status(WP_REST_Request $request)
+    {
+        $job = $this->get_creation_job((string) $request['job_id']);
+
+        if (! is_array($job)) {
+            return new WP_Error('aiditor_creation_job_not_found', '未找到对应创作任务。', array('status' => 404));
+        }
+
+        return rest_ensure_response($this->format_creation_job_response($job));
+    }
+
+    public function handle_creation_worker_request(): void
+    {
+        $job_id = isset($_POST['job_id']) ? sanitize_key((string) wp_unslash($_POST['job_id'])) : '';
+        $token  = isset($_POST['token']) ? trim((string) wp_unslash($_POST['token'])) : '';
+
+        if (! $this->is_valid_creation_worker_request($job_id, $token)) {
+            status_header(403);
+            echo 'forbidden';
+            exit;
+        }
+
+        if (function_exists('ignore_user_abort')) {
+            ignore_user_abort(true);
+        }
+
+        status_header(202);
+        echo 'accepted';
+        if (function_exists('fastcgi_finish_request')) {
+            fastcgi_finish_request();
+        }
+
+        $this->process_creation_job($job_id);
+        exit;
+    }
+
+    public function process_creation_job(string $job_id): void
+    {
+        $job = $this->get_creation_job($job_id);
+
+        if (! is_array($job) || ! in_array((string) ($job['status'] ?? ''), array('queued', 'running'), true)) {
+            return;
+        }
+
+        if (! $this->acquire_creation_job_lock($job_id)) {
+            return;
+        }
+
+        $trace_id = (string) ($job['trace_id'] ?? $this->generate_trace_id('creation'));
+
+        try {
+            $this->update_creation_job(
+                $job_id,
+                array(
+                    'status'     => 'running',
+                    'started_at' => gmdate('c'),
+                    'message'    => 'AI 正在后台创作文章。',
+                )
+            );
+
+            $result = $this->generate_creation_article_from_payload(
+                is_array($job['payload'] ?? null) ? $job['payload'] : array(),
+                $trace_id
+            );
+
+            $this->update_creation_job(
+                $job_id,
+                array(
+                    'status'      => 'completed',
+                    'finished_at' => gmdate('c'),
+                    'message'     => '创作完成。',
+                    'result'      => $result,
+                )
+            );
+        } catch (Throwable $exception) {
+            $runtime_settings = is_array($job['runtime_settings'] ?? null) ? $job['runtime_settings'] : array();
+            $error_response = $this->build_creation_error_payload($trace_id, 'ai_completion', $exception, $runtime_settings);
+
+            $this->update_creation_job(
+                $job_id,
+                array(
+                    'status'      => 'failed',
+                    'finished_at' => gmdate('c'),
+                    'message'     => (string) ($error_response['message'] ?? $exception->getMessage()),
+                    'error'       => $error_response,
+                )
+            );
+        } finally {
+            $this->release_creation_job_lock($job_id);
+        }
+    }
+
+    protected function generate_creation_article_from_payload(array $payload, string $trace_id): array
+    {
+        $stage = 'init';
+        $started_at = microtime(true);
+        $runtime_settings = array();
+
+        try {
+            $prompt             = trim((string) ($payload['prompt'] ?? ''));
+            $style_id           = sanitize_key((string) ($payload['style_id'] ?? ''));
+            $style_instruction  = trim((string) ($payload['style_instruction'] ?? ''));
+            $runtime_settings   = $this->resolve_request_model_settings($payload);
+            $runtime_settings['aiditor_trace_id'] = $trace_id;
+            $field_schema       = $this->get_default_creation_field_schema();
+            $style_prompt       = '' !== $style_id
+                ? $this->resolve_creation_style_prompt($style_id)
+                : $this->resolve_creation_style_prompt('editorial-guide');
+            $combined_style     = trim($style_prompt . ('' !== $style_instruction ? "\n补充风格要求：" . $style_instruction : ''));
+
+            if ('' === $prompt) {
+                throw new RuntimeException('请填写创作说明。');
+            }
+
+            $stage = 'reference_context';
+            $reference_started_at = microtime(true);
+            $reference_context = $this->build_creation_reference_context($prompt);
+            $this->log_creation_trace(
+                $trace_id,
+                'reference_context_ready',
+                array(
+                    'duration_ms'   => (int) round((microtime(true) - $reference_started_at) * 1000),
+                    'url_count'     => count($this->extract_creation_urls($prompt)),
+                    'context_bytes' => strlen($reference_context),
+                )
+            );
+
+            $stage = 'ai_completion';
+            $ai_started_at = microtime(true);
             $response = $this->rewriter->complete_chat(
                 array(
                     'model'       => (string) $runtime_settings['model'],
                     'temperature' => isset($runtime_settings['temperature']) ? (float) $runtime_settings['temperature'] : 0.5,
                     'max_tokens'  => isset($runtime_settings['max_tokens']) ? (int) $runtime_settings['max_tokens'] : 4000,
+                    'stream'      => true,
                     'messages'    => array(
                         array(
                             'role'    => 'system',
@@ -1273,18 +1428,38 @@ class AIditor_REST_Controller
                 ),
                 $runtime_settings
             );
-
-            $article = $this->decode_creation_article($this->rewriter->extract_completion_content($response));
-            $article = $this->sanitize_creation_article($article);
-
-            return rest_ensure_response(
+            $this->log_creation_trace(
+                $trace_id,
+                'ai_completion_ready',
                 array(
-                    'field_schema' => $field_schema,
-                    'article'      => $article,
+                    'duration_ms' => (int) round((microtime(true) - $ai_started_at) * 1000),
+                    'model'       => (string) ($runtime_settings['model'] ?? ''),
+                    'profile_id'  => (string) ($runtime_settings['model_profile_id'] ?? ''),
                 )
             );
+
+            $stage = 'decode_article';
+            $article = $this->decode_creation_article($this->rewriter->extract_completion_content($response));
+
+            return array(
+                'field_schema' => $field_schema,
+                'article'      => $this->sanitize_creation_article($article),
+                'trace_id'     => $trace_id,
+            );
         } catch (Throwable $exception) {
-            return new WP_Error('aiditor_creation_generate_failed', $exception->getMessage(), array('status' => 400));
+            $this->log_creation_trace(
+                $trace_id,
+                'creation_generate_failed',
+                array(
+                    'stage'           => $stage,
+                    'duration_ms'     => (int) round((microtime(true) - $started_at) * 1000),
+                    'exception_class' => get_class($exception),
+                    'error_code'      => (int) $exception->getCode(),
+                    'message'         => $exception->getMessage(),
+                )
+            );
+
+            throw $exception;
         }
     }
 
@@ -1838,6 +2013,291 @@ class AIditor_REST_Controller
         return $urls;
     }
 
+    protected function build_creation_error_response(string $trace_id, string $stage, Throwable $exception, array $runtime_settings): WP_REST_Response
+    {
+        $payload = $this->build_creation_error_payload($trace_id, $stage, $exception, $runtime_settings);
+        $status = (int) ($payload['data']['status'] ?? 400);
+
+        return new WP_REST_Response($payload, $status);
+    }
+
+    protected function build_creation_error_payload(string $trace_id, string $stage, Throwable $exception, array $runtime_settings): array
+    {
+        $upstream_status = $this->get_exception_status_code($exception);
+        $status = $this->map_creation_error_status($upstream_status);
+        $model = (string) ($runtime_settings['model'] ?? '');
+        $host = (string) parse_url((string) ($runtime_settings['base_url'] ?? ''), PHP_URL_HOST);
+        $message = sprintf('[trace:%s] %s', $trace_id, $exception->getMessage());
+
+        if ($upstream_status > 0) {
+            $message = sprintf(
+                '[trace:%s] 上游 AI 网关返回 HTTP %d，模型请求未完成。当前模型：%s。请检查 %s 的模型路由、超时和转发日志。',
+                $trace_id,
+                $upstream_status,
+                '' !== $model ? $model : '未识别',
+                '' !== $host ? $host : '上游网关'
+            );
+        }
+
+        return array(
+            'code'    => 'aiditor_creation_generate_failed',
+            'message' => $message,
+            'data'    => array(
+                'status'          => $status,
+                'trace_id'        => $trace_id,
+                'stage'           => $stage,
+                'upstream_status' => $upstream_status,
+                'model'           => $model,
+                'upstream_host'   => $host,
+            ),
+        );
+    }
+
+    protected function create_creation_job(array $payload, string $trace_id): array
+    {
+        if (! function_exists('add_option')) {
+            throw new RuntimeException('当前环境无法创建后台创作任务。');
+        }
+
+        $job_id = 'creation-' . substr(md5($trace_id . ':' . microtime(true)), 0, 16);
+        $runtime_settings = $this->resolve_request_model_settings($payload);
+        unset($runtime_settings['api_key']);
+
+        $job = array(
+            'job_id'           => $job_id,
+            'trace_id'         => $trace_id,
+            'status'           => 'queued',
+            'message'          => '等待后台创作。',
+            'payload'          => $payload,
+            'runtime_settings' => $runtime_settings,
+            'token'            => $this->create_creation_worker_token($job_id),
+            'created_at'       => gmdate('c'),
+            'updated_at'       => gmdate('c'),
+            'expires_at'       => time() + self::CREATION_JOB_TTL,
+            'created_by'       => function_exists('get_current_user_id') ? (int) get_current_user_id() : 0,
+        );
+
+        if (! add_option($this->get_creation_job_option_key($job_id), $job, '', 'no')) {
+            throw new RuntimeException('创建后台创作任务失败，请重试。');
+        }
+
+        return $job;
+    }
+
+    protected function get_creation_job(string $job_id): ?array
+    {
+        if (! function_exists('get_option')) {
+            return null;
+        }
+
+        $job_id = sanitize_key($job_id);
+        if ('' === $job_id) {
+            return null;
+        }
+
+        $job = get_option($this->get_creation_job_option_key($job_id), null);
+        if (! is_array($job)) {
+            return null;
+        }
+
+        if ((int) ($job['expires_at'] ?? 0) > 0 && (int) $job['expires_at'] < time()) {
+            $this->delete_creation_job($job_id);
+            return null;
+        }
+
+        return $job;
+    }
+
+    protected function update_creation_job(string $job_id, array $updates): ?array
+    {
+        if (! function_exists('update_option')) {
+            return null;
+        }
+
+        $job = $this->get_creation_job($job_id);
+        if (! is_array($job)) {
+            return null;
+        }
+
+        $job = array_replace($job, $updates, array('updated_at' => gmdate('c')));
+        update_option($this->get_creation_job_option_key($job_id), $job, false);
+
+        return $job;
+    }
+
+    protected function delete_creation_job(string $job_id): void
+    {
+        if (function_exists('delete_option')) {
+            delete_option($this->get_creation_job_option_key($job_id));
+            delete_option($this->get_creation_job_lock_key($job_id));
+        }
+    }
+
+    protected function format_creation_job_response(array $job): array
+    {
+        $status = (string) ($job['status'] ?? 'queued');
+        $response = array(
+            'job_id'     => (string) ($job['job_id'] ?? ''),
+            'trace_id'   => (string) ($job['trace_id'] ?? ''),
+            'status'     => $status,
+            'message'    => (string) ($job['message'] ?? ''),
+            'created_at' => (string) ($job['created_at'] ?? ''),
+            'updated_at' => (string) ($job['updated_at'] ?? ''),
+        );
+
+        if ('completed' === $status && is_array($job['result'] ?? null)) {
+            $response = array_replace($response, $job['result']);
+        }
+
+        if ('failed' === $status && is_array($job['error'] ?? null)) {
+            $response['error'] = $job['error'];
+        }
+
+        return $response;
+    }
+
+    protected function launch_creation_worker(string $job_id): bool
+    {
+        $job = $this->get_creation_job($job_id);
+        if (! is_array($job)) {
+            return false;
+        }
+
+        $this->schedule_creation_job($job_id, 1);
+
+        if (! function_exists('wp_remote_post') || ! function_exists('admin_url')) {
+            return false;
+        }
+
+        $response = wp_remote_post(
+            admin_url('admin-ajax.php'),
+            array(
+                'blocking'    => false,
+                'timeout'     => 2,
+                'redirection' => 0,
+                'sslverify'   => $this->should_verify_ssl(),
+                'body'        => array(
+                    'action' => 'aiditor_creation_worker',
+                    'job_id' => $job_id,
+                    'token'  => (string) ($job['token'] ?? ''),
+                ),
+            )
+        );
+
+        return ! is_wp_error($response);
+    }
+
+    protected function schedule_creation_job(string $job_id, int $delay): void
+    {
+        if (! function_exists('wp_schedule_single_event')) {
+            return;
+        }
+
+        wp_schedule_single_event(time() + max(0, $delay), 'aiditor_process_creation_job', array($job_id));
+
+        if (function_exists('spawn_cron')) {
+            @spawn_cron(time());
+        }
+    }
+
+    protected function acquire_creation_job_lock(string $job_id): bool
+    {
+        if (! function_exists('add_option') || ! function_exists('get_option') || ! function_exists('delete_option')) {
+            return true;
+        }
+
+        $key = $this->get_creation_job_lock_key($job_id);
+        $expires_at = time() + 600;
+
+        if (add_option($key, (string) $expires_at, '', 'no')) {
+            return true;
+        }
+
+        $current = (int) get_option($key, 0);
+        if ($current > 0 && $current < time()) {
+            delete_option($key);
+            return add_option($key, (string) $expires_at, '', 'no');
+        }
+
+        return false;
+    }
+
+    protected function release_creation_job_lock(string $job_id): void
+    {
+        if (function_exists('delete_option')) {
+            delete_option($this->get_creation_job_lock_key($job_id));
+        }
+    }
+
+    protected function create_creation_worker_token(string $job_id): string
+    {
+        $secret = function_exists('wp_salt') ? wp_salt('auth') : '';
+        if ('' === trim($secret)) {
+            $secret = defined('AUTH_KEY') ? (string) AUTH_KEY : __FILE__;
+        }
+
+        return hash_hmac('sha256', $job_id, $secret);
+    }
+
+    protected function is_valid_creation_worker_request(string $job_id, string $token): bool
+    {
+        $job = $this->get_creation_job($job_id);
+
+        return is_array($job)
+            && '' !== $token
+            && hash_equals((string) ($job['token'] ?? ''), $token);
+    }
+
+    protected function get_creation_job_option_key(string $job_id): string
+    {
+        return self::CREATION_JOB_OPTION_PREFIX . md5($job_id);
+    }
+
+    protected function get_creation_job_lock_key(string $job_id): string
+    {
+        return self::CREATION_JOB_LOCK_PREFIX . md5($job_id);
+    }
+
+    protected function should_verify_ssl(): bool
+    {
+        if (function_exists('apply_filters')) {
+            return (bool) apply_filters('aiditor_sslverify', true);
+        }
+
+        return true;
+    }
+
+    protected function get_exception_status_code(Throwable $exception): int
+    {
+        if ($exception instanceof AIditor_AI_Request_Exception) {
+            return $exception->get_status_code();
+        }
+
+        $code = (int) $exception->getCode();
+        if ($code >= 100 && $code <= 599) {
+            return $code;
+        }
+
+        return $this->extract_http_status_from_message($exception->getMessage());
+    }
+
+    protected function map_creation_error_status(int $upstream_status): int
+    {
+        if (524 === $upstream_status) {
+            return 502;
+        }
+
+        if ($upstream_status >= 500 && $upstream_status <= 599 && '' !== get_status_header_desc($upstream_status)) {
+            return $upstream_status;
+        }
+
+        if ($upstream_status >= 400 && $upstream_status <= 499) {
+            return 400;
+        }
+
+        return 400;
+    }
+
     protected function resolve_creation_style_prompt(string $style_id): string
     {
         if ($this->article_styles instanceof AIditor_Article_Style_Repository) {
@@ -2151,6 +2611,40 @@ class AIditor_REST_Controller
         );
 
         return is_array($admins) && ! empty($admins) ? (int) $admins[0] : 0;
+    }
+
+    protected function generate_trace_id(string $prefix): string
+    {
+        $safe_prefix = sanitize_key($prefix);
+        if ('' === $safe_prefix) {
+            $safe_prefix = 'aiditor';
+        }
+
+        if (function_exists('wp_generate_uuid4')) {
+            return $safe_prefix . '-' . substr(str_replace('-', '', wp_generate_uuid4()), 0, 12);
+        }
+
+        return $safe_prefix . '-' . substr(md5((string) microtime(true) . ':' . wp_rand()), 0, 12);
+    }
+
+    protected function log_creation_trace(string $trace_id, string $event, array $context = array()): void
+    {
+        if (! function_exists('error_log')) {
+            return;
+        }
+
+        $payload = array(
+            'trace_id' => $trace_id,
+            'event'    => $event,
+            'context'  => $context,
+            'time'     => gmdate('c'),
+        );
+
+        $json = function_exists('wp_json_encode')
+            ? wp_json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+            : json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        error_log('[AIditor][creation] ' . (is_string($json) ? $json : $event));
     }
 
     protected function get_request_payload(WP_REST_Request $request): array

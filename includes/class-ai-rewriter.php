@@ -50,13 +50,25 @@ class AIditor_AI_Rewriter
 
     public function complete_chat(array $payload, array $settings): array
     {
+        $headers = array(
+            'Authorization' => 'Bearer ' . trim((string) ($settings['api_key'] ?? '')),
+            'Content-Type'  => 'application/json',
+            'Accept'        => 'application/json',
+        );
+        $trace_id = trim((string) ($settings['aiditor_trace_id'] ?? ''));
+
+        if ('' !== $trace_id) {
+            $headers['X-AIditor-Trace-Id'] = $trace_id;
+        }
+
+        if (! empty($payload['stream'])) {
+            $headers['Accept'] = 'text/event-stream';
+        }
+
         return $this->post_json(
             $this->build_endpoint((string) ($settings['base_url'] ?? '')),
             $payload,
-            array(
-                'Authorization' => 'Bearer ' . trim((string) ($settings['api_key'] ?? '')),
-                'Content-Type'  => 'application/json',
-            ),
+            $headers,
             (int) ($settings['request_timeout'] ?? 60)
         );
     }
@@ -163,7 +175,8 @@ class AIditor_AI_Rewriter
 
         $rewritten = null;
         $last_exception = null;
-        $max_attempts = count(self::INLINE_RETRY_DELAYS) + 1;
+        $content_length_retry_used = false;
+        $max_attempts = count(self::INLINE_RETRY_DELAYS) + 2;
 
         for ($attempt = 1; $attempt <= $max_attempts; ++$attempt) {
             try {
@@ -178,6 +191,14 @@ class AIditor_AI_Rewriter
                     $this->decode_rewritten_fields_payload($this->extract_message_content($response)),
                     $term_map
                 );
+
+                $content_length_gap = $this->get_shorter_rewritten_content_gap($fields, $rewritten, $targets, $field_schema);
+                if (! empty($content_length_gap) && ! $content_length_retry_used) {
+                    $payload = $this->append_field_rewrite_length_feedback($payload, $content_length_gap);
+                    $content_length_retry_used = true;
+                    continue;
+                }
+
                 break;
             } catch (Throwable $exception) {
                 $last_exception = $this->normalize_runtime_exception($exception);
@@ -401,9 +422,13 @@ class AIditor_AI_Rewriter
         $schema_map = $this->map_field_schema($field_schema);
 
         foreach ($targets as $key) {
+            $field = $schema_map[$key] ?? array('key' => $key, 'label' => $key, 'type' => 'text');
+            $type = (string) ($field['type'] ?? 'text');
+            $value = $fields[$key] ?? '';
             $target_fields[$key] = array(
-                'field' => $schema_map[$key] ?? array('key' => $key, 'label' => $key, 'type' => 'text'),
-                'value' => $fields[$key] ?? '',
+                'field' => $field,
+                'value' => $value,
+                'plain_text_length' => $this->text_length($this->normalize_field_value_for_comparison($value, $type)),
             );
         }
 
@@ -416,10 +441,69 @@ class AIditor_AI_Rewriter
                 '字段输出要求：text 字段返回纯文本；textarea 字段返回纯文本自然段；html 字段返回可直接写入 WordPress 正文的 HTML 片段。',
                 '重写强约束：输出必须与原字段在表达上明显不同，不能只是按原文重新分段、轻微改标点、替换少量近义词或保持原句顺序照搬。',
                 '术语保留约束：原文中的专有名词、翻译词、英文原词、缩写、型号、版本号、产品名、品牌名、人名、机构名、地名和技术名词必须原样保留；不要把 API、SDK、AI、WordPress、Gutenberg 等缩写或名称改写成别的表述。',
-                '正文 content 如被重写，必须保留原文全部有效信息，以原正文为基础扩写、重组段落、补充背景解释和最新相关语境，不能写成摘要，不能压缩篇幅；content 的纯文本长度必须大于或等于原 content 纯文本长度。',
+                '正文 content 如被重写，必须保留原文全部有效信息，以原正文为基础扩写、重组段落、补充背景解释和最新相关语境，不能写成摘要，不能压缩篇幅。',
+                '如果需要重写 content，返回 content 的纯文本长度必须大于或等于“需要重写的字段”中 content.plain_text_length；低于该长度视为无效结果。',
                 '摘要 summary 如被重写，优先改成更凝练的概述，而不是复制正文开头。',
                 '只返回需要重写字段的 JSON，例如 {"summary":"...","content":"<p>...</p>"}。不要返回 notes、confidence 或解释文字。',
             )
+        );
+    }
+
+    protected function append_field_rewrite_length_feedback(array $payload, array $content_length_gap): array
+    {
+        $json_encode = function_exists('wp_json_encode') ? 'wp_json_encode' : 'json_encode';
+
+        if (! isset($payload['messages']) || ! is_array($payload['messages'])) {
+            $payload['messages'] = array();
+        }
+
+        $payload['messages'][] = array(
+            'role'    => 'assistant',
+            'content' => (string) $json_encode(
+                array('content' => (string) ($content_length_gap['rewritten_value'] ?? '')),
+                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+            ),
+        );
+        $payload['messages'][] = array(
+            'role'    => 'user',
+            'content' => sprintf(
+                '上一次返回的 content 纯文本长度为 %d，低于原文纯文本长度 %d，结果无效。请重新返回严格 JSON，只包含 content 字段；content 必须保留全部事实并扩写到纯文本长度大于或等于 %d，且不要解释。',
+                (int) ($content_length_gap['rewritten_length'] ?? 0),
+                (int) ($content_length_gap['original_length'] ?? 0),
+                (int) ($content_length_gap['original_length'] ?? 0)
+            ),
+        );
+
+        return $payload;
+    }
+
+    protected function get_shorter_rewritten_content_gap(array $fields, array $rewritten, array $targets, array $field_schema): array
+    {
+        if (! in_array('content', $targets, true) || ! array_key_exists('content', $rewritten)) {
+            return array();
+        }
+
+        $schema_map = $this->map_field_schema($field_schema);
+        $field = $schema_map['content'] ?? array('key' => 'content', 'type' => 'html');
+        $type = (string) ($field['type'] ?? 'html');
+        $original_text = $this->normalize_field_value_for_comparison($fields['content'] ?? '', $type);
+        $rewritten_text = $this->normalize_field_value_for_comparison($rewritten['content'] ?? '', $type);
+
+        if ('' === $original_text || '' === $rewritten_text) {
+            return array();
+        }
+
+        $original_length = $this->text_length($original_text);
+        $rewritten_length = $this->text_length($rewritten_text);
+
+        if ($rewritten_length >= $original_length) {
+            return array();
+        }
+
+        return array(
+            'original_length'  => $original_length,
+            'rewritten_length' => $rewritten_length,
+            'rewritten_value'  => $rewritten['content'],
         );
     }
 
@@ -504,31 +588,64 @@ class AIditor_AI_Rewriter
     protected function post_json(string $url, array $payload, array $headers, int $timeout): array
     {
         $sslverify = $this->should_verify_ssl();
+        $trace_id = trim((string) ($headers['X-AIditor-Trace-Id'] ?? ''));
+        unset($headers['X-AIditor-Trace-Id']);
+        $started_at = microtime(true);
         $body = function_exists('wp_json_encode')
             ? wp_json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
             : json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
         if (! is_string($body)) {
+            $this->log_ai_trace($trace_id, 'request_body_encode_failed');
             throw new RuntimeException('AI 请求体编码失败。');
         }
+
+        $this->log_ai_trace(
+            $trace_id,
+            'request_started',
+            array(
+                'url'          => $url,
+                'host'         => (string) parse_url($url, PHP_URL_HOST),
+                'timeout'      => $timeout,
+                'payload_size' => strlen($body),
+                'model'        => (string) ($payload['model'] ?? ''),
+                'max_tokens'   => (int) ($payload['max_tokens'] ?? 0),
+                'temperature'  => isset($payload['temperature']) ? (float) $payload['temperature'] : null,
+                'stream'       => ! empty($payload['stream']),
+                'messages'     => $this->summarize_messages_for_log(is_array($payload['messages'] ?? null) ? $payload['messages'] : array()),
+            )
+        );
 
         if (function_exists('wp_remote_post')) {
             $response = wp_remote_post(
                 $url,
                 array(
-                    'timeout'   => $timeout,
-                    'sslverify' => $sslverify,
-                    'headers'   => $headers,
-                    'body'      => $body,
+                    'timeout'     => $timeout,
+                    'redirection' => 0,
+                    'httpversion' => '1.1',
+                    'user-agent'  => 'AIditor/' . (defined('AIDITOR_VERSION') ? AIDITOR_VERSION : 'unknown') . ' OpenAI-Compatible Client',
+                    'sslverify'   => $sslverify,
+                    'headers'     => $headers,
+                    'body'        => $body,
+                    'data_format' => 'body',
                 )
             );
 
             if (is_wp_error($response)) {
+                $this->log_ai_trace(
+                    $trace_id,
+                    'wp_remote_post_error',
+                    array(
+                        'duration_ms' => (int) round((microtime(true) - $started_at) * 1000),
+                        'error'       => $response->get_error_message(),
+                    )
+                );
                 throw $this->create_request_exception($response->get_error_message());
             }
 
             $status       = (int) wp_remote_retrieve_response_code($response);
             $response_body = (string) wp_remote_retrieve_body($response);
+            $response_headers = $this->summarize_response_headers(wp_remote_retrieve_headers($response));
             $retry_after   = $this->parse_retry_after(
                 is_string(wp_remote_retrieve_header($response, 'retry-after'))
                     ? wp_remote_retrieve_header($response, 'retry-after')
@@ -536,6 +653,16 @@ class AIditor_AI_Rewriter
             );
 
             if ($status < 200 || $status >= 300) {
+                $this->log_ai_trace(
+                    $trace_id,
+                    'wp_remote_post_non_2xx',
+                    array(
+                        'duration_ms'   => (int) round((microtime(true) - $started_at) * 1000),
+                        'status'        => $status,
+                        'response_size' => strlen($response_body),
+                        'headers'       => $response_headers,
+                    )
+                );
                 throw $this->create_request_exception(
                     sprintf('AI 重构请求失败，HTTP 状态码为 %d。', $status),
                     $status,
@@ -556,6 +683,8 @@ class AIditor_AI_Rewriter
                     CURLOPT_SSL_VERIFYHOST => $sslverify ? 2 : 0,
                     CURLOPT_HTTPHEADER     => $this->headers_to_array($headers),
                     CURLOPT_POSTFIELDS     => $body,
+                    CURLOPT_USERAGENT      => 'AIditor/' . (defined('AIDITOR_VERSION') ? AIDITOR_VERSION : 'unknown') . ' OpenAI-Compatible Client',
+                    CURLOPT_HTTP_VERSION   => CURL_HTTP_VERSION_1_1,
                     CURLOPT_HEADERFUNCTION => function ($curl_handle, string $header_line) use (&$response_headers): int {
                         $parts = explode(':', $header_line, 2);
 
@@ -572,6 +701,14 @@ class AIditor_AI_Rewriter
             if (false === $response_body) {
                 $error = curl_error($curl);
                 curl_close($curl);
+                $this->log_ai_trace(
+                    $trace_id,
+                    'curl_exec_error',
+                    array(
+                        'duration_ms' => (int) round((microtime(true) - $started_at) * 1000),
+                        'error'       => $error,
+                    )
+                );
                 throw $this->create_request_exception('AI 重构请求失败：' . $error);
             }
 
@@ -579,6 +716,15 @@ class AIditor_AI_Rewriter
             curl_close($curl);
 
             if ($status < 200 || $status >= 300) {
+                $this->log_ai_trace(
+                    $trace_id,
+                    'curl_non_2xx',
+                    array(
+                        'duration_ms'   => (int) round((microtime(true) - $started_at) * 1000),
+                        'status'        => $status,
+                        'response_size' => strlen((string) $response_body),
+                    )
+                );
                 throw $this->create_request_exception(
                     sprintf('AI 重构请求失败，HTTP 状态码为 %d。', $status),
                     $status,
@@ -591,10 +737,29 @@ class AIditor_AI_Rewriter
             throw new RuntimeException('当前环境没有可用的 HTTP 传输能力，无法执行 AI 重构请求。');
         }
 
-        $decoded = json_decode($response_body, true);
+        $decoded = ! empty($payload['stream'])
+            ? $this->decode_streaming_completion_response($response_body, $trace_id, $started_at)
+            : json_decode($response_body, true);
         if (! is_array($decoded)) {
+            $this->log_ai_trace(
+                $trace_id,
+                'response_decode_failed',
+                array(
+                    'duration_ms'   => (int) round((microtime(true) - $started_at) * 1000),
+                    'response_size' => strlen($response_body),
+                )
+            );
             throw $this->create_request_exception('AI 服务返回了无效的 JSON 数据。', 200, null, true);
         }
+
+        $this->log_ai_trace(
+            $trace_id,
+            'request_succeeded',
+            array(
+                'duration_ms'   => (int) round((microtime(true) - $started_at) * 1000),
+                'response_size' => strlen($response_body),
+            )
+        );
 
         return $decoded;
     }
@@ -622,6 +787,91 @@ class AIditor_AI_Rewriter
         }
 
         throw $this->create_request_exception('AI 服务未返回可用的完成结果。', 200, null, true);
+    }
+
+    protected function decode_streaming_completion_response(string $response_body, string $trace_id, float $started_at): array
+    {
+        $content = '';
+        $events = 0;
+        $lines = preg_split('/\r\n|\r|\n/', $response_body);
+
+        if (! is_array($lines)) {
+            $lines = array();
+        }
+
+        foreach ($lines as $line) {
+            $line = trim((string) $line);
+            if ('' === $line || 0 !== strpos($line, 'data:')) {
+                continue;
+            }
+
+            $data = trim(substr($line, 5));
+            if ('' === $data) {
+                continue;
+            }
+
+            if ('[DONE]' === $data) {
+                break;
+            }
+
+            ++$events;
+            $decoded = json_decode($data, true);
+            if (! is_array($decoded)) {
+                continue;
+            }
+
+            $delta = $decoded['choices'][0]['delta']['content'] ?? null;
+            if (is_string($delta)) {
+                $content .= $delta;
+                continue;
+            }
+
+            $message = $decoded['choices'][0]['message']['content'] ?? null;
+            if (is_string($message)) {
+                $content .= $message;
+            }
+        }
+
+        $content = trim($content);
+        if ('' === $content) {
+            $fallback = json_decode($response_body, true);
+            if (is_array($fallback)) {
+                return $fallback;
+            }
+
+            $this->log_ai_trace(
+                $trace_id,
+                'stream_decode_empty',
+                array(
+                    'duration_ms'   => (int) round((microtime(true) - $started_at) * 1000),
+                    'response_size' => strlen($response_body),
+                    'events'        => $events,
+                )
+            );
+
+            return array();
+        }
+
+        $this->log_ai_trace(
+            $trace_id,
+            'stream_decode_succeeded',
+            array(
+                'duration_ms'    => (int) round((microtime(true) - $started_at) * 1000),
+                'response_size'  => strlen($response_body),
+                'events'         => $events,
+                'content_length' => strlen($content),
+            )
+        );
+
+        return array(
+            'choices' => array(
+                array(
+                    'message' => array(
+                        'content' => $content,
+                    ),
+                ),
+            ),
+        );
     }
 
     protected function decode_article_payload(string $content, string $source_title, string $fallback_excerpt): array
@@ -808,7 +1058,7 @@ class AIditor_AI_Rewriter
             $original = $fields[$key] ?? null;
             $merged = $merged_fields[$key] ?? null;
 
-            if ('content' === $key && $this->rewritten_content_is_shorter($original, $merged, (string) ($field['type'] ?? 'text'))) {
+            if ('content' === $key && $this->rewritten_content_is_too_short($original, $merged, (string) ($field['type'] ?? 'text'))) {
                 $merged_fields[$key] = $original;
                 $unchanged_keys[] = $key;
                 continue;
@@ -832,7 +1082,7 @@ class AIditor_AI_Rewriter
         );
     }
 
-    protected function rewritten_content_is_shorter($original, $rewritten, string $type): bool
+    protected function rewritten_content_is_too_short($original, $rewritten, string $type): bool
     {
         $original_text = $this->normalize_field_value_for_comparison($original, $type);
         $rewritten_text = $this->normalize_field_value_for_comparison($rewritten, $type);
@@ -841,7 +1091,16 @@ class AIditor_AI_Rewriter
             return false;
         }
 
-        return $this->text_length($rewritten_text) < $this->text_length($original_text);
+        $original_length = $this->text_length($original_text);
+        $rewritten_length = $this->text_length($rewritten_text);
+
+        if ($original_length < 120) {
+            return false;
+        }
+
+        $minimum_length = min(600, max(80, (int) floor($original_length * 0.25)));
+
+        return $rewritten_length < $minimum_length;
     }
 
     protected function text_length(string $text): int
@@ -1182,6 +1441,87 @@ class AIditor_AI_Rewriter
         }
 
         return new RuntimeException($exception->getMessage(), (int) $exception->getCode(), $exception);
+    }
+
+    protected function log_ai_trace(string $trace_id, string $event, array $context = array()): void
+    {
+        if ('' === $trace_id || ! function_exists('error_log')) {
+            return;
+        }
+
+        $payload = array(
+            'trace_id' => $trace_id,
+            'event'    => $event,
+            'context'  => $context,
+            'time'     => gmdate('c'),
+        );
+
+        $json = function_exists('wp_json_encode')
+            ? wp_json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+            : json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        error_log('[AIditor][ai-request] ' . (is_string($json) ? $json : $event));
+    }
+
+    protected function summarize_response_headers($headers): array
+    {
+        if (is_object($headers) && method_exists($headers, 'getAll')) {
+            $headers = $headers->getAll();
+        }
+
+        if (! is_array($headers)) {
+            return array();
+        }
+
+        $wanted = array(
+            'cf-ray',
+            'server',
+            'content-type',
+            'retry-after',
+            'x-request-id',
+            'x-trace-id',
+            'via',
+        );
+        $summary = array();
+
+        foreach ($wanted as $key) {
+            foreach ($headers as $header => $value) {
+                if (strtolower((string) $header) !== $key) {
+                    continue;
+                }
+
+                $summary[$key] = is_array($value) ? implode(', ', array_map('strval', $value)) : (string) $value;
+                break;
+            }
+        }
+
+        return $summary;
+    }
+
+    protected function summarize_messages_for_log(array $messages): array
+    {
+        $summary = array();
+
+        foreach ($messages as $index => $message) {
+            if (! is_array($message)) {
+                continue;
+            }
+
+            $content = $message['content'] ?? '';
+            if (is_array($content)) {
+                $content = function_exists('wp_json_encode')
+                    ? wp_json_encode($content, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+                    : json_encode($content, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            }
+
+            $summary[] = array(
+                'index'  => $index,
+                'role'   => (string) ($message['role'] ?? ''),
+                'length' => is_string($content) ? strlen($content) : 0,
+            );
+        }
+
+        return $summary;
     }
 
     protected function calculate_inline_retry_delay_seconds(int $attempt, Throwable $exception): int

@@ -3,7 +3,7 @@
  * Plugin Name: AIditor
  * Plugin URI: https://github.com/itandelin/AIditor
  * Description: AIditor 使用通用 AI 采集模板从外部列表页或详情页抽取内容，并写入 WordPress 文章。
- * Version: 0.0.5
+ * Version: 0.1.0
  * Author: Mr. T
  * Author URI: https://github.com/itandelin/AIditor
  * Requires at least: 6.0
@@ -17,7 +17,7 @@ if (! defined('ABSPATH')) {
     exit;
 }
 
-define('AIDITOR_VERSION', '0.0.5');
+define('AIDITOR_VERSION', '0.1.0');
 define('AIDITOR_FILE', __FILE__);
 define('AIDITOR_PATH', plugin_dir_path(__FILE__));
 define('AIDITOR_URL', plugin_dir_url(__FILE__));
@@ -41,6 +41,7 @@ $aiditor_files = array(
     AIDITOR_PATH . 'includes/class-queue-worker.php',
     AIDITOR_PATH . 'includes/class-admin-page.php',
     AIDITOR_PATH . 'includes/class-rest-controller.php',
+    AIDITOR_PATH . 'includes/class-updater.php',
     AIDITOR_PATH . 'includes/class-plugin.php',
 );
 

@@ -45,6 +45,8 @@ class AIditor_Plugin
 
     protected AIditor_REST_Controller $rest_controller;
 
+    protected AIditor_Updater $updater;
+
     protected bool $hooks_registered = false;
 
     public function __construct()
@@ -96,6 +98,7 @@ class AIditor_Plugin
             $this->draft_writer,
             $this->queue_worker
         );
+        $this->updater = new AIditor_Updater(AIDITOR_FILE, AIDITOR_VERSION, 'itandelin/AIditor');
     }
 
     public function register_hooks(): void
@@ -111,8 +114,12 @@ class AIditor_Plugin
         add_action('admin_enqueue_scripts', array($this->admin_page, 'enqueue_assets'));
         add_action('rest_api_init', array($this->rest_controller, 'register_routes'));
         add_action(self::CLEANUP_CRON_HOOK, array($this, 'cleanup_logs'));
+        add_action('wp_ajax_aiditor_creation_worker', array($this->rest_controller, 'handle_creation_worker_request'));
+        add_action('wp_ajax_nopriv_aiditor_creation_worker', array($this->rest_controller, 'handle_creation_worker_request'));
+        add_action('aiditor_process_creation_job', array($this->rest_controller, 'process_creation_job'));
         $this->queue_worker->register_hooks();
         $this->ensure_cleanup_schedule();
+        $this->updater->register_hooks();
 
         $this->hooks_registered = true;
     }

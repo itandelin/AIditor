@@ -22,6 +22,8 @@
         articleStyles: [],
         modelProfiles: [],
         creation: {
+            activeJobId: '',
+            jobPollTimer: null,
             result: null,
             fieldSchema: [],
             fieldMapping: [],
@@ -279,6 +281,55 @@
         return 'is-muted';
     }
 
+    function buildApiError(message, data, response) {
+        var error = new Error(message || '请求失败。');
+
+        error.code = data && data.code ? data.code : '';
+        error.data = data && data.data ? data.data : {};
+        error.status = response ? response.status : 0;
+
+        return error;
+    }
+
+    function parseApiJsonResponse(response) {
+        return response.text().then(function (text) {
+            var data = null;
+            var contentType = response.headers && response.headers.get ? String(response.headers.get('content-type') || '') : '';
+            var trimmed = String(text || '').trim();
+
+            if (trimmed) {
+                try {
+                    data = JSON.parse(trimmed);
+                } catch (error) {
+                    if (!response.ok) {
+                        throw buildApiError('请求失败，服务器返回了非 JSON 响应（HTTP ' + response.status + '）。', null, response);
+                    }
+
+                    throw buildApiError('请求成功但响应不是有效 JSON，请检查服务器错误日志。', null, response);
+                }
+            }
+
+            if (!response.ok) {
+                var message = data && data.message
+                    ? data.message
+                    : (trimmed ? '请求失败（HTTP ' + response.status + '）。' : '请求失败，服务器返回空响应（HTTP ' + response.status + '）。');
+                throw buildApiError(message, data, response);
+            }
+
+            if (!data) {
+                throw buildApiError(
+                    contentType.indexOf('application/json') === -1
+                        ? '请求成功但服务器未返回 JSON 数据。'
+                        : '请求成功但服务器返回了空 JSON 响应。',
+                    null,
+                    response
+                );
+            }
+
+            return data;
+        });
+    }
+
     function api(path, options) {
         var config = getAppConfig();
         var request = Object.assign(
@@ -293,18 +344,7 @@
         );
 
         return fetch((config.restUrl || '') + path, request).then(function (response) {
-            return response.json().then(function (data) {
-                if (!response.ok) {
-                    var message = (data && data.message) || '请求失败。';
-                    var error = new Error(message);
-                    error.code = data && data.code ? data.code : '';
-                    error.data = data && data.data ? data.data : {};
-                    error.status = response.status;
-                    throw error;
-                }
-
-                return data;
-            });
+            return parseApiJsonResponse(response);
         });
     }
 
@@ -3414,6 +3454,78 @@
         return '';
     }
 
+    function applyCreationGenerateResult(data, notice, publishNotice) {
+        state.creation.result = data.article || null;
+        state.creation.generatedCover = '';
+        state.creation.applyFeaturedImage = false;
+        resetCoverRetryState('creation');
+        state.creation.fieldSchema = data.field_schema || state.creation.fieldSchema;
+        state.creation.fieldMapping = buildDefaultEditingMapping(state.creation.fieldSchema, getCreationTargetConfig());
+        syncCreationSelections();
+        renderCreationResult();
+        renderCreationFieldMapping();
+        setNotice(notice, '创作完成。请检查右侧结果并确认发布设置。', 'success');
+        setNotice(publishNotice, '已生成默认字段映射，请确认后发布。', 'success');
+    }
+
+    function clearCreationJobPolling() {
+        if (state.creation.jobPollTimer) {
+            window.clearTimeout(state.creation.jobPollTimer);
+            state.creation.jobPollTimer = null;
+        }
+    }
+
+    function getCreationJobErrorMessage(data) {
+        var error = data && data.error ? data.error : null;
+
+        if (error && error.message) {
+            return error.message;
+        }
+
+        return data && data.message ? data.message : 'AI 创作失败。';
+    }
+
+    function pollCreationGenerateJob(jobId, notice, publishNotice, attempt) {
+        attempt = attempt || 1;
+
+        return api('creation/generate/' + encodeURIComponent(jobId) + '/status')
+            .then(function (data) {
+                var status = data && data.status ? data.status : '';
+
+                if (status === 'completed') {
+                    clearCreationJobPolling();
+                    state.creation.activeJobId = '';
+                    applyCreationGenerateResult(data, notice, publishNotice);
+                    return data;
+                }
+
+                if (status === 'failed') {
+                    clearCreationJobPolling();
+                    state.creation.activeJobId = '';
+                    setNotice(notice, getCreationJobErrorMessage(data), 'error');
+                    return data;
+                }
+
+                if (attempt > 120) {
+                    clearCreationJobPolling();
+                    setNotice(notice, 'AI 创作仍在后台执行，请稍后刷新状态。', 'error');
+                    return data;
+                }
+
+                setNotice(notice, data && data.message ? data.message : 'AI 正在后台创作文章…', 'success');
+                state.creation.jobPollTimer = window.setTimeout(function () {
+                    pollCreationGenerateJob(jobId, notice, publishNotice, attempt + 1);
+                }, 2000);
+
+                return data;
+            })
+            .catch(function (error) {
+                clearCreationJobPolling();
+                state.creation.activeJobId = '';
+                setNotice(notice, error.message, 'error');
+            });
+    }
+
     function validateCreationPublishPayload(payload) {
         if (!payload.generated_fields || !payload.generated_fields.title || !payload.generated_fields.content_html) {
             return '请先完成创作。';
@@ -3566,21 +3678,19 @@
                 }
 
                 setNotice(notice, 'AI 正在创作文章…', 'success');
+                clearCreationJobPolling();
                 api('creation/generate', {
                     method: 'POST',
                     body: JSON.stringify(payload)
                 }).then(function (data) {
-                    state.creation.result = data.article || null;
-                    state.creation.generatedCover = '';
-                    state.creation.applyFeaturedImage = false;
-                    resetCoverRetryState('creation');
-                    state.creation.fieldSchema = data.field_schema || state.creation.fieldSchema;
-                    state.creation.fieldMapping = buildDefaultEditingMapping(state.creation.fieldSchema, getCreationTargetConfig());
-                    syncCreationSelections();
-                    renderCreationResult();
-                    renderCreationFieldMapping();
-                    setNotice(notice, '创作完成。请检查右侧结果并确认发布设置。', 'success');
-                    setNotice(publishNotice, '已生成默认字段映射，请确认后发布。', 'success');
+                    if (data && data.job_id) {
+                        state.creation.activeJobId = data.job_id;
+                        setNotice(notice, data.message || 'AI 创作任务已创建，正在后台生成。', 'success');
+                        pollCreationGenerateJob(data.job_id, notice, publishNotice, 1);
+                        return;
+                    }
+
+                    applyCreationGenerateResult(data || {}, notice, publishNotice);
                 }).catch(function (error) {
                     setNotice(notice, error.message, 'error');
                 });
@@ -4118,14 +4228,41 @@
         };
     }
 
+    function buildEditingRewriteRequestFields(selectedKeys) {
+        var fields = state.editing.extractedFields || {};
+        var keys = ['title', 'source_url', 'date', 'author', 'keywords'].concat(selectedKeys || []);
+        var requestFields = {};
+
+        keys.forEach(function (key) {
+            var normalizedKey = sanitizeFieldKey(key);
+
+            if (normalizedKey && Object.prototype.hasOwnProperty.call(fields, normalizedKey)) {
+                requestFields[normalizedKey] = fields[normalizedKey];
+            }
+        });
+
+        return requestFields;
+    }
+
+    function buildEditingRewriteRequestSchema(selectedKeys) {
+        var selectedMap = {};
+        ['title', 'source_url', 'date', 'author', 'keywords'].concat(selectedKeys || []).forEach(function (key) {
+            selectedMap[sanitizeFieldKey(key)] = true;
+        });
+
+        return (state.editing.fieldSchema || []).filter(function (field) {
+            return field && selectedMap[sanitizeFieldKey(field.key)];
+        });
+    }
+
     function buildEditingRewritePayload() {
         syncEditingSelections();
 
         return {
             model_profile_id: $('#aiditor-editing-model-profile') ? $('#aiditor-editing-model-profile').value : '',
             style_id: $('#aiditor-editing-style-preset') ? $('#aiditor-editing-style-preset').value : '',
-            fields: state.editing.extractedFields || {},
-            field_schema: state.editing.fieldSchema || [],
+            fields: buildEditingRewriteRequestFields(state.editing.rewriteSelection),
+            field_schema: buildEditingRewriteRequestSchema(state.editing.rewriteSelection),
             rewrite_fields: state.editing.rewriteSelection,
             instruction: $('#aiditor-editing-rewrite-instruction') ? $('#aiditor-editing-rewrite-instruction').value.trim() : ''
         };
@@ -4353,7 +4490,7 @@
                     method: 'POST',
                     body: JSON.stringify(payload)
                 }).then(function (data) {
-                    state.editing.rewrittenFields = data.rewritten_fields || {};
+                    state.editing.rewrittenFields = Object.assign({}, state.editing.extractedFields || {}, data.rewritten_fields || {});
                     state.editing.rewrittenChangedFields = data.changed_fields || {};
                     state.editing.rewrittenChangedKeys = Array.isArray(data.rewritten_keys) ? data.rewritten_keys.slice() : [];
                     state.editing.rewriteRequestedKeys = Array.isArray(data.requested_keys) ? data.requested_keys.slice() : [];
